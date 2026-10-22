@@ -1,0 +1,21 @@
+body {
+    margin: 0;
+    padding: 24px;
+    font-family: Arial, sans-serif;
+    background-color: #f4f6f8;
+    color: #202833;
+}
+
+header {
+    padding: 16px;
+    background-color: #17365d;
+    color: white;
+    border-radius: 8px;
+}
+
+main {
+    margin-top: 24px;
+    padding: 20px;
+    background-color: white;
+    border-radius: 8px;
+}
