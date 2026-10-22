@@ -1,0 +1,126 @@
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+
+from app.data.extensions import db
+from app.data.models.sale import Sale, SaleItem
+
+
+CENT = Decimal("0.01")
+
+
+class SaleValidationError(ValueError):
+    """Raised when a requested sale is invalid."""
+
+
+def money(value):
+    """Convert a price to a two-decimal Decimal."""
+    try:
+        amount = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise SaleValidationError("Invalid monetary amount.") from exc
+
+    if not amount.is_finite():
+        raise SaleValidationError("Monetary amount must be finite.")
+
+    return amount.quantize(CENT, rounding=ROUND_HALF_UP)
+
+
+def create_sale(items, product_model):
+    """
+    Create a sale and deduct stock atomically.
+
+    Expected items format:
+        [{"product_id": 1, "quantity": 2}, ...]
+
+    product_model must provide id, name, price, and stock attributes.
+    Products are locked where supported by the database.
+    """
+    if not items:
+        raise SaleValidationError("A sale must contain at least one item.")
+
+
+    quantities = {}
+    for item in items:
+        try:
+            raw_product_id = item["product_id"]
+            raw_quantity = item["quantity"]
+
+            if isinstance(raw_product_id, bool) or isinstance(raw_quantity, bool):
+                raise ValueError("Boolean values are not valid IDs or quantities.")
+
+            product_id = int(raw_product_id)
+            quantity = int(raw_quantity)
+
+            if str(product_id) != str(raw_product_id).strip():
+                raise ValueError("Product ID must be an integer.")
+
+            if str(quantity) != str(raw_quantity).strip():
+                raise ValueError("Quantity must be an integer.")
+
+        except (KeyError, TypeError, ValueError) as exc:
+            raise SaleValidationError(
+                "Each item needs a valid integer product_id and quantity."
+            ) from exc
+
+        if product_id <= 0 or quantity <= 0:
+            raise SaleValidationError(
+                "Product IDs and quantities must be positive."
+            )
+
+        quantities[product_id] = quantities.get(product_id, 0) + quantity
+
+    sale = Sale(total_amount=Decimal("0.00"))
+    total = Decimal("0.00")
+
+    try:
+        for product_id in sorted(quantities):
+            query = db.session.query(product_model).filter_by(id=product_id)
+
+            if db.engine.dialect.name != "sqlite":
+                query = query.with_for_update()
+
+            product = query.one_or_none()
+
+            if product is None:
+                raise SaleValidationError(
+                    f"Product {product_id} does not exist."
+                )
+
+            quantity = quantities[product_id]
+            stock = int(product.stock)
+
+            if stock < quantity:
+                raise SaleValidationError(
+                    f"Insufficient stock for product {product_id}."
+                )
+
+            unit_price = money(product.price)
+
+            if unit_price < 0:
+                raise SaleValidationError(
+                    "Product price cannot be negative."
+                )
+
+            line_total = money(unit_price * quantity)
+
+            sale.items.append(
+                SaleItem(
+                    product_id=product_id,
+                    product_name=str(product.name),
+                    quantity=quantity,
+                    unit_price=unit_price,
+                    line_total=line_total,
+                )
+            )
+
+            product.stock = stock - quantity
+            total += line_total
+
+        sale.total_amount = money(total)
+        db.session.add(sale)
+        db.session.commit()
+        return sale
+
+    except Exception:
+        db.session.rollback()
+        raise
+

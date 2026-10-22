@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+
+{% block title %}Invoice #{{ sale.id }} | Electronics Store{% endblock %}
+
+{% block content %}
+<section class="invoice">
+    <h2>Sales Invoice</h2>
+    <p><strong>Invoice number:</strong> {{ sale.id }}</p>
+    <p><strong>Date:</strong> {{ sale.created_at }}</p>
+
+    <table>
+        <thead>
+            <tr>
+                <th>Product</th>
+                <th>Quantity</th>
+                <th>Unit price</th>
+                <th>Line total</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in sale.items %}
+            <tr>
+                <td>{{ item.product_name }}</td>
+                <td>{{ item.quantity }}</td>
+                <td>{{ "%.2f"|format(item.unit_price) }}</td>
+                <td>{{ "%.2f"|format(item.line_total) }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <h3>Total: {{ "%.2f"|format(sale.total_amount) }}</h3>
+    <button onclick="window.print()">Print Invoice</button>
+</section>
+{% endblock %}
