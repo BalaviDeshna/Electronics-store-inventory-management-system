@@ -1,7 +1,61 @@
+
 {% extends "base.html" %}
-{% block title %}Home | Electronics Store{% endblock %}
+
+{% block title %}Create Sale | Electronics Store{% endblock %}
+
 {% block content %}
 <h2>Application Setup Successful</h2>
-<p>The project skeleton is running.</p>
-<p>Inventory, authentication and billing features will be added next.</p>
+<p>Create and manage sales transactions below.</p>
+<h2>Create Sale</h2>
+{% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+        <p class="{{ category }}" role="alert">{{ message }}</p>
+    {% endfor %}
+{% endwith %}
+
+{% if products %}
+<form action="{{ url_for('main.create_sale_route') }}" method="post">
+    <p>Select a product and enter its quantity.</p>
+
+    <div id="sale-items">
+        <div class="sale-item">
+            <label>
+                Product
+                <select name="product_id" required>
+                    <option value="">Select a product</option>
+                    {% for product in products %}
+                    <option value="{{ product.id }}">
+                        {{ product.name }} — {{ "%.2f"|format(product.price) }}
+                        (Stock: {{ product.stock }})
+                    </option>
+                    {% endfor %}
+                </select>
+            </label>
+
+            <label>
+                Quantity
+                <input type="number" name="quantity" min="1" step="1" required>
+            </label>
+        </div>
+    </div>
+
+    <button type="button" onclick="addSaleItem()">Add another item</button>
+    <button type="submit">Complete Sale</button>
+</form>
+
+<script>
+function addSaleItem() {
+    const container = document.getElementById("sale-items");
+    const firstItem = container.querySelector(".sale-item");
+    const newItem = firstItem.cloneNode(true);
+
+    newItem.querySelector("select").selectedIndex = 0;
+    newItem.querySelector("input").value = "";
+
+    container.appendChild(newItem);
+}
+</script>
+{% else %}
+<p>No products are available yet. Ask the inventory team to add products first.</p>
+{% endif %}
 {% endblock %}
