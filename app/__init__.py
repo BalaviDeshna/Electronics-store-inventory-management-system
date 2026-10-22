@@ -1,7 +1,7 @@
 from flask import Flask
 from app.config import Config
 from app.data.extensions import db, login_manager
-from app.data.models import Sale, SaleItem
+from app.data.models import Product, Sale, SaleItem
 from app.presentation.routes.main import main_bp
 
 
