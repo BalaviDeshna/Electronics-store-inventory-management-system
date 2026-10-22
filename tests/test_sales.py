@@ -1,3 +1,4 @@
+import app.presentation.routes.main as sales_routes
 from decimal import Decimal
 
 import pytest
@@ -5,7 +6,7 @@ import pytest
 from app.data.extensions import db
 from app.data.models.sale import Sale, SaleItem
 from app.business.sales import create_sale, SaleValidationError
-
+import app.presentation.routes.main as sales_routes
 
 class Product(db.Model):
     """Test-only product model; not the team's production model."""
@@ -17,6 +18,11 @@ class Product(db.Model):
     price = db.Column(db.Numeric(12, 2), nullable=False)
     stock = db.Column(db.Integer, nullable=False)
 
+
+
+@pytest.fixture(autouse=True)
+def use_test_product_model(monkeypatch):
+    monkeypatch.setattr(sales_routes, "Product", Product)
 
 def add_product(name, price, stock):
     product = Product(
@@ -127,4 +133,72 @@ def test_non_integer_quantity_is_rejected(app, quantity):
 
         assert Sale.query.count() == 0
         assert db.session.get(Product, product.id).stock == 10
+
+
+def test_create_sale_route_redirects_to_invoice(app, client):
+    with app.app_context():
+        product = add_product("Keyboard", "25.50", 5)
+        product_id = product.id
+
+    response = client.post(
+        "/sales",
+        data={
+            "product_id": [str(product_id)],
+            "quantity": ["2"],
+        },
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Sales Invoice" in response.data
+    assert b"Keyboard" in response.data
+    assert b"51.00" in response.data
+
+    with app.app_context():
+        assert db.session.get(Product, product_id).stock == 3
+        assert Sale.query.count() == 1
+
+
+def test_create_sale_route_rejects_invalid_quantity(app, client):
+    with app.app_context():
+        product = add_product("Mouse", "15.00", 5)
+        product_id = product.id
+
+    response = client.post(
+        "/sales",
+        data={
+            "product_id": [str(product_id)],
+            "quantity": ["0"],
+        },
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"positive" in response.data.lower()
+
+    with app.app_context():
+        assert db.session.get(Product, product_id).stock == 5
+        assert Sale.query.count() == 0
+
+
+def test_create_sale_route_rejects_insufficient_stock(app, client):
+    with app.app_context():
+        product = add_product("Monitor", "200.00", 1)
+        product_id = product.id
+
+    response = client.post(
+        "/sales",
+        data={
+            "product_id": [str(product_id)],
+            "quantity": ["2"],
+        },
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Insufficient stock" in response.data
+
+    with app.app_context():
+        assert db.session.get(Product, product_id).stock == 1
+        assert Sale.query.count() == 0
 
