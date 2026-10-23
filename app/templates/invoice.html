@@ -1,13 +1,10 @@
 {% extends "base.html" %}
-
-{% block title %}Invoice #{{ sale.id }} | Electronics Store{% endblock %}
-
+{% block title %}Transaction INV-{{ sale.id }} | Electronics Store{% endblock %}
 {% block content %}
 <section class="invoice">
     <h2>Sales Invoice</h2>
-    <p><strong>Invoice number:</strong> {{ sale.id }}</p>
-    <p><strong>Date:</strong> {{ sale.created_at }}</p>
-
+    <p><strong>Transaction ID:</strong> INV-{{ sale.id }}</p>
+    <p><strong>Date:</strong> {{ sale.created_at.strftime("%Y-%m-%d %H:%M:%S") }} UTC</p>
     <table>
         <thead>
             <tr>
@@ -28,8 +25,7 @@
             {% endfor %}
         </tbody>
     </table>
-
-    <h3>Total: {{ "%.2f"|format(sale.total_amount) }}</h3>
-    <button onclick="window.print()">Print Invoice</button>
+    <h3>Grand total: {{ "%.2f"|format(sale.total_amount) }}</h3>
+    <button type="button" onclick="window.print()">Print Invoice</button>
 </section>
 {% endblock %}
