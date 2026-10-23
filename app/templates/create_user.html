@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Create User Account{% endblock %}
+{% block content %}
+
+<h2>Create User Account</h2>
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+        <p class="{{ category }}" role="alert">{{ message }}</p>
+    {% endfor %}
+{% endwith %}
+
+<form method="post" action="{{ url_for('auth.create_user') }}">
+    <label for="username">Username</label>
+    <input id="username" name="username" type="text"
+           maxlength="80" autocomplete="username" required>
+
+    <label for="password">Temporary password</label>
+    <input id="password" name="password" type="password"
+           minlength="8" autocomplete="new-password" required>
+
+    <button type="submit">Create Account</button>
+</form>
+
+{% endblock %}

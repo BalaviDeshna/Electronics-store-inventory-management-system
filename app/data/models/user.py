@@ -1,3 +1,4 @@
+
 from flask_login import UserMixin
 from app.data.extensions import db
 
@@ -10,6 +11,9 @@ class User(UserMixin, db.Model):
         db.String(80), unique=True, nullable=False, index=True
     )
     password_hash = db.Column(db.String(60), nullable=False)
+    role = db.Column(
+        db.String(20), nullable=False, default="staff"
+    )
 
     def set_password(self, password):
         from app.business.security import hash_password
