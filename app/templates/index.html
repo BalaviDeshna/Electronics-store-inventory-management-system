@@ -13,7 +13,8 @@
     {% endfor %}
 {% endwith %}
 
-{% if products %}
+{% set available_products = all_products if all_products is defined else products %}
+{% if available_products %}
 <form action="{{ url_for('main.create_sale_route') }}" method="post">
     <p>Select a product and enter its quantity.</p>
 
@@ -23,7 +24,7 @@
                 Product
                 <select name="product_id" required>
                     <option value="">Select a product</option>
-                    {% for product in products %}
+                    {% for product in available_products %}
                     <option value="{{ product.id }}">
                         {{ product.name }} — {{ "%.2f"|format(product.price) }}
                         (Stock: {{ product.stock }})
@@ -57,9 +58,21 @@ function addSaleItem() {
 </script>
 
 <h2>Inventory Products</h2>
+
+<form method="GET" action="{{ url_for('main.home') }}" class="search-form">
+    <label for="search-input">Search Products:</label>
+    <input type="text" id="search-input" name="q" value="{{ q }}" placeholder="Search by name or SKU...">
+    <button type="submit">Search</button>
+    {% if q %}
+        <a href="{{ url_for('main.home') }}">Clear search</a>
+    {% endif %}
+</form>
+
+{% if products %}
 <table>
     <thead>
         <tr>
+            <th>SKU</th>
             <th>Product</th>
             <th>Price</th>
             <th>Stock</th>
@@ -69,6 +82,7 @@ function addSaleItem() {
     <tbody>
         {% for product in products %}
         <tr>
+            <td>{{ product.sku or "—" }}</td>
             <td>{{ product.name }}</td>
             <td>{{ "%.2f"|format(product.price) }}</td>
             <td>{{ product.stock }}</td>
@@ -82,6 +96,9 @@ function addSaleItem() {
         {% endfor %}
     </tbody>
 </table>
+{% else %}
+<p>No products found matching your search.</p>
+{% endif %}
 {% else %}
 <p>No products are available yet. Ask the inventory team to add products first.</p>
 {% endif %}
