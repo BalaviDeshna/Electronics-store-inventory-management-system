@@ -103,3 +103,61 @@ def create_product():
         return redirect(url_for("main.create_product"))
 
     return render_template("create_product.html")
+
+
+@main_bp.route("/products/<int:product_id>/edit", methods=["GET", "POST"])
+def edit_product(product_id):
+    product = db.session.get(Product, product_id)
+    if product is None:
+        abort(404, description="Product not found.")
+
+    if request.method == "POST":
+        name = request.form.get("name", "").strip()
+        raw_price = request.form.get("price", "").strip()
+        raw_stock = request.form.get("stock", "").strip()
+
+        if not name:
+            flash("Product name is required.", "error")
+            return render_template("edit_product.html", product=product)
+
+        if len(name) > 200:
+            flash("Product name must be 200 characters or fewer.", "error")
+            return render_template("edit_product.html", product=product)
+
+        try:
+            price = Decimal(raw_price)
+            if not price.is_finite() or price < 0:
+                raise ValueError
+            price = price.quantize(Decimal("0.01"))
+        except (InvalidOperation, ValueError):
+            flash("Enter a valid, non-negative price.", "error")
+            return render_template("edit_product.html", product=product)
+
+        try:
+            stock = int(raw_stock)
+            if stock < 0:
+                raise ValueError
+        except (ValueError, TypeError):
+            flash("Stock must be a non-negative whole number.", "error")
+            return render_template("edit_product.html", product=product)
+
+        product.name = name
+        product.price = price
+        product.stock = stock
+        try:
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+            current_app.logger.exception("Unable to update product")
+            flash("The product could not be updated. Please try again.", "error")
+            return render_template("edit_product.html", product=product)
+
+        flash("Product updated successfully.", "success")
+        return redirect(url_for("main.edit_product", product_id=product.id))
+
+    return render_template("edit_product.html", product=product)
+
+
+@main_bp.route("/products/<int:product_id>/update", methods=["GET", "POST"])
+def update_product(product_id):
+    return edit_product(product_id)
