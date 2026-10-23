@@ -1,5 +1,7 @@
 from decimal import Decimal, InvalidOperation
 
+from sqlalchemy import or_
+from sqlalchemy.exc import IntegrityError
 from flask import (
     Blueprint,
     abort,
@@ -21,8 +23,23 @@ main_bp = Blueprint("main", __name__)
 
 @main_bp.route("/")
 def home():
-    products = Product.query.order_by(Product.name).all()
-    return render_template("index.html", products=products)
+    q = request.args.get("q", "").strip()
+    query_obj = Product.query
+    if q:
+        conditions = [Product.name.ilike(f"%{q}%")]
+        if hasattr(Product, "sku"):
+            conditions.append(Product.sku.ilike(f"%{q}%"))
+        query_obj = query_obj.filter(or_(*conditions))
+
+    products = query_obj.order_by(Product.name).all()
+    all_products = Product.query.order_by(Product.name).all()
+    return render_template(
+        "index.html",
+        products=products,
+        all_products=all_products,
+        q=q,
+        query=q,
+    )
 
 
 @main_bp.route("/sales", methods=["POST"])
@@ -67,6 +84,7 @@ def invoice(sale_id):
 def create_product():
     if request.method == "POST":
         name = request.form.get("name", "").strip()
+        raw_sku = request.form.get("sku", "").strip()
         raw_price = request.form.get("price", "").strip()
         raw_stock = request.form.get("stock", "").strip()
 
@@ -77,6 +95,19 @@ def create_product():
         if len(name) > 200:
             flash("Product name must be 200 characters or fewer.", "error")
             return render_template("create_product.html")
+
+        sku = raw_sku if raw_sku else None
+        if sku:
+            if len(sku) > 100:
+                flash("SKU must be 100 characters or fewer.", "error")
+                return render_template("create_product.html")
+
+            existing_sku = db.session.execute(
+                db.select(Product).filter_by(sku=sku)
+            ).scalar_one_or_none()
+            if existing_sku:
+                flash("A product with this SKU already exists.", "error")
+                return render_template("create_product.html")
 
         try:
             price = Decimal(raw_price)
@@ -95,9 +126,19 @@ def create_product():
             flash("Stock must be a non-negative whole number.", "error")
             return render_template("create_product.html")
 
-        product = Product(name=name, price=price, stock=stock)
+        product = Product(name=name, sku=sku, price=price, stock=stock)
         db.session.add(product)
-        db.session.commit()
+        try:
+            db.session.commit()
+        except IntegrityError:
+            db.session.rollback()
+            flash("A product with this SKU already exists.", "error")
+            return render_template("create_product.html")
+        except Exception:
+            db.session.rollback()
+            current_app.logger.exception("Unable to create product")
+            flash("The product could not be created. Please try again.", "error")
+            return render_template("create_product.html")
 
         flash("Product created successfully.", "success")
         return redirect(url_for("main.create_product"))
@@ -113,6 +154,7 @@ def edit_product(product_id):
 
     if request.method == "POST":
         name = request.form.get("name", "").strip()
+        raw_sku = request.form.get("sku", "").strip()
         raw_price = request.form.get("price", "").strip()
         raw_stock = request.form.get("stock", "").strip()
 
@@ -123,6 +165,19 @@ def edit_product(product_id):
         if len(name) > 200:
             flash("Product name must be 200 characters or fewer.", "error")
             return render_template("edit_product.html", product=product)
+
+        sku = raw_sku if raw_sku else None
+        if sku:
+            if len(sku) > 100:
+                flash("SKU must be 100 characters or fewer.", "error")
+                return render_template("edit_product.html", product=product)
+
+            existing_sku = db.session.execute(
+                db.select(Product).filter_by(sku=sku)
+            ).scalar_one_or_none()
+            if existing_sku and existing_sku.id != product.id:
+                flash("A product with this SKU already exists.", "error")
+                return render_template("edit_product.html", product=product)
 
         try:
             price = Decimal(raw_price)
@@ -142,10 +197,15 @@ def edit_product(product_id):
             return render_template("edit_product.html", product=product)
 
         product.name = name
+        product.sku = sku
         product.price = price
         product.stock = stock
         try:
             db.session.commit()
+        except IntegrityError:
+            db.session.rollback()
+            flash("A product with this SKU already exists.", "error")
+            return render_template("edit_product.html", product=product)
         except Exception:
             db.session.rollback()
             current_app.logger.exception("Unable to update product")

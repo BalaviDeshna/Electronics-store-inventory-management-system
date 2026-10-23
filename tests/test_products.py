@@ -368,3 +368,238 @@ def test_delete_product_with_sales_history_is_rejected_and_preserves_records(cli
     assert b"Sales Invoice" in invoice_resp.data
     assert b"Historical Item" in invoice_resp.data
     assert b"200.00" in invoice_resp.data
+
+
+def test_search_by_exact_product_name(client):
+    p1 = Product(name="Wireless Mouse", sku="MOU-001", price=Decimal("25.00"), stock=10)
+    p2 = Product(name="Mechanical Keyboard", sku="KEY-001", price=Decimal("75.00"), stock=5)
+    db.session.add_all([p1, p2])
+    db.session.commit()
+
+    response = client.get("/?q=Wireless+Mouse")
+    assert response.status_code == 200
+    assert b"Wireless Mouse" in response.data
+    assert b"MOU-001" in response.data
+    assert b"KEY-001" not in response.data
+
+
+def test_search_by_partial_product_name(client):
+    p1 = Product(name="Wireless Mouse", sku="MOU-001", price=Decimal("25.00"), stock=10)
+    p2 = Product(name="Mechanical Keyboard", sku="KEY-001", price=Decimal("75.00"), stock=5)
+    db.session.add_all([p1, p2])
+    db.session.commit()
+
+    response = client.get("/?q=mouse")
+    assert response.status_code == 200
+    assert b"Wireless Mouse" in response.data
+    assert b"KEY-001" not in response.data
+
+
+def test_search_by_exact_sku(client):
+    p1 = Product(name="Wireless Mouse", sku="MOU-001", price=Decimal("25.00"), stock=10)
+    p2 = Product(name="Mechanical Keyboard", sku="KEY-001", price=Decimal("75.00"), stock=5)
+    db.session.add_all([p1, p2])
+    db.session.commit()
+
+    response = client.get("/?q=MOU-001")
+    assert response.status_code == 200
+    assert b"Wireless Mouse" in response.data
+    assert b"KEY-001" not in response.data
+
+
+def test_search_by_partial_sku(client):
+    p1 = Product(name="Wireless Mouse", sku="MOU-001", price=Decimal("25.00"), stock=10)
+    p2 = Product(name="Mechanical Keyboard", sku="KEY-001", price=Decimal("75.00"), stock=5)
+    db.session.add_all([p1, p2])
+    db.session.commit()
+
+    response = client.get("/?q=KEY")
+    assert response.status_code == 200
+    assert b"Mechanical Keyboard" in response.data
+    assert b"MOU-001" not in response.data
+
+
+def test_search_case_insensitive(client):
+    p1 = Product(name="Gaming Headset", sku="HEAD-PRO-9", price=Decimal("59.99"), stock=4)
+    db.session.add(p1)
+    db.session.commit()
+
+    res_name = client.get("/?q=gAmInG")
+    assert res_name.status_code == 200
+    assert b"Gaming Headset" in res_name.data
+
+    res_sku = client.get("/?q=head-pro-9")
+    assert res_sku.status_code == 200
+    assert b"Gaming Headset" in res_sku.data
+
+
+def test_search_matches_either_name_or_sku(client):
+    p1 = Product(name="Studio Monitor", sku="SPEAKER-01", price=Decimal("150.00"), stock=2)
+    p2 = Product(name="Desktop Mic", sku="MONITOR-AUDIO", price=Decimal("80.00"), stock=3)
+    db.session.add_all([p1, p2])
+    db.session.commit()
+
+    response = client.get("/?q=monitor")
+    assert response.status_code == 200
+    assert b"Studio Monitor" in response.data
+    assert b"Desktop Mic" in response.data
+
+
+def test_search_trims_whitespace_and_preserves_input(client):
+    p1 = Product(name="USB Hub", sku="HUB-4PORT", price=Decimal("15.00"), stock=12)
+    db.session.add(p1)
+    db.session.commit()
+
+    response = client.get("/?q=+++USB+Hub+++")
+    assert response.status_code == 200
+    assert b"USB Hub" in response.data
+    assert b'value="USB Hub"' in response.data
+
+
+def test_search_no_matching_results(client):
+    p1 = Product(name="USB Hub", sku="HUB-4PORT", price=Decimal("15.00"), stock=12)
+    db.session.add(p1)
+    db.session.commit()
+
+    response = client.get("/?q=NonexistentDevice12345")
+    assert response.status_code == 200
+    assert b"No products found matching your search." in response.data
+    assert b"Clear search" in response.data
+    assert b"HUB-4PORT" not in response.data
+
+
+def test_empty_search_shows_all_products(client):
+    p1 = Product(name="Item One", sku="SKU-1", price=Decimal("10.00"), stock=1)
+    p2 = Product(name="Item Two", sku="SKU-2", price=Decimal("20.00"), stock=2)
+    db.session.add_all([p1, p2])
+    db.session.commit()
+
+    response = client.get("/?q=+++")
+    assert response.status_code == 200
+    assert b"Item One" in response.data
+    assert b"Item Two" in response.data
+
+
+def test_create_product_with_sku_success(client):
+    response = client.post(
+        "/products/create",
+        data={
+            "name": "Bluetooth Speaker",
+            "sku": "SPK-BT-100",
+            "price": "39.99",
+            "stock": "20",
+        },
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert b"Product created successfully." in response.data
+
+    created = db.session.execute(
+        db.select(Product).filter_by(name="Bluetooth Speaker")
+    ).scalar_one()
+    assert created.sku == "SPK-BT-100"
+
+
+def test_create_product_rejects_duplicate_sku(client):
+    p1 = Product(name="First Item", sku="UNIQUE-SKU", price=Decimal("10.00"), stock=5)
+    db.session.add(p1)
+    db.session.commit()
+
+    response = client.post(
+        "/products/create",
+        data={
+            "name": "Second Item",
+            "sku": "UNIQUE-SKU",
+            "price": "20.00",
+            "stock": "3",
+        },
+    )
+    assert response.status_code == 200
+    assert b"A product with this SKU already exists." in response.data
+
+    items = db.session.execute(db.select(Product).filter_by(sku="UNIQUE-SKU")).scalars().all()
+    assert len(items) == 1
+    assert items[0].name == "First Item"
+
+
+def test_edit_product_with_sku_success(client):
+    product = Product(name="Webcam", sku="CAM-720P", price=Decimal("30.00"), stock=4)
+    db.session.add(product)
+    db.session.commit()
+    product_id = product.id
+
+    response = client.post(
+        f"/products/{product_id}/edit",
+        data={
+            "name": "HD Webcam 1080P",
+            "sku": "CAM-1080P",
+            "price": "45.00",
+            "stock": "6",
+        },
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert b"Product updated successfully." in response.data
+
+    updated = db.session.get(Product, product_id)
+    assert updated.sku == "CAM-1080P"
+    assert updated.name == "HD Webcam 1080P"
+
+
+def test_edit_product_rejects_duplicate_sku(client):
+    p1 = Product(name="Item A", sku="SKU-AAA", price=Decimal("10.00"), stock=2)
+    p2 = Product(name="Item B", sku="SKU-BBB", price=Decimal("15.00"), stock=3)
+    db.session.add_all([p1, p2])
+    db.session.commit()
+    p2_id = p2.id
+
+    response = client.post(
+        f"/products/{p2_id}/edit",
+        data={
+            "name": "Item B Modified",
+            "sku": "SKU-AAA",
+            "price": "18.00",
+            "stock": "3",
+        },
+    )
+    assert response.status_code == 200
+    assert b"A product with this SKU already exists." in response.data
+
+    unchanged = db.session.get(Product, p2_id)
+    assert unchanged.sku == "SKU-BBB"
+    assert unchanged.name == "Item B"
+
+
+def test_edit_product_allows_retaining_same_sku(client):
+    product = Product(name="Tablet", sku="TAB-001", price=Decimal("200.00"), stock=5)
+    db.session.add(product)
+    db.session.commit()
+    product_id = product.id
+
+    response = client.post(
+        f"/products/{product_id}/edit",
+        data={
+            "name": "Tablet Pro",
+            "sku": "TAB-001",
+            "price": "220.00",
+            "stock": "5",
+        },
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert b"Product updated successfully." in response.data
+
+    updated = db.session.get(Product, product_id)
+    assert updated.name == "Tablet Pro"
+    assert updated.sku == "TAB-001"
+
+
+def test_sku_displayed_in_inventory_table(client):
+    product = Product(name="Power Bank", sku="PB-20000", price=Decimal("29.99"), stock=15)
+    db.session.add(product)
+    db.session.commit()
+
+    response = client.get("/")
+    assert response.status_code == 200
+    assert b"PB-20000" in response.data
+    assert b"Power Bank" in response.data

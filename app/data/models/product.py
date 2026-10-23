@@ -9,6 +9,7 @@ class Product(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(200), nullable=False)
+    sku = db.Column(db.String(100), unique=True, nullable=True, index=True)
     price = db.Column(db.Numeric(12, 2), nullable=False)
     stock = db.Column(db.Integer, nullable=False, default=0)
 
