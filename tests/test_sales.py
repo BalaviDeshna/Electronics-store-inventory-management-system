@@ -113,9 +113,17 @@ def test_invoice_page_displays_sale_details(app, client):
 
     assert response.status_code == 200
     assert b"Sales Invoice" in response.data
+    assert b"Transaction ID:" in response.data
+    assert f"INV-{sale_id}".encode() in response.data
+    assert b"Date:" in response.data
+    assert b"Product" in response.data
+    assert b"Quantity" in response.data
+    assert b"Unit price" in response.data
+    assert b"Line total" in response.data
+    assert b"Grand total:" in response.data
+    assert b"Print Invoice" in response.data
     assert b"Keyboard" in response.data
     assert b"51.00" in response.data
-
 
 def test_invoice_returns_404_for_unknown_sale(client):
     response = client.get("/sales/999999/invoice")
