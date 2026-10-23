@@ -258,3 +258,113 @@ def test_update_product_via_update_route(client):
     assert updated.name == "HD Webcam"
     assert updated.price == Decimal("55.00")
     assert updated.stock == 10
+
+
+def test_delete_action_is_available_for_existing_product(client):
+    product = Product(name="Wireless Earbuds", price=Decimal("49.99"), stock=10)
+    db.session.add(product)
+    db.session.commit()
+
+    response = client.get("/")
+    assert response.status_code == 200
+    assert f"/products/{product.id}/delete".encode() in response.data
+    assert b"Delete" in response.data
+    assert b"confirm(" in response.data
+
+    edit_response = client.get(f"/products/{product.id}/edit")
+    assert edit_response.status_code == 200
+    assert f"/products/{product.id}/delete".encode() in edit_response.data
+
+
+def test_delete_product_success(client):
+    product = Product(name="To Delete", price=Decimal("19.99"), stock=5)
+    db.session.add(product)
+    db.session.commit()
+    product_id = product.id
+
+    response = client.post(f"/products/{product_id}/delete", follow_redirects=True)
+    assert response.status_code == 200
+    assert b"Product deleted successfully." in response.data
+
+    deleted = db.session.get(Product, product_id)
+    assert deleted is None
+
+
+def test_delete_nonexistent_product_returns_404(client):
+    response = client.post("/products/999999/delete")
+    assert response.status_code == 404
+    assert b"Product not found." in response.data
+
+
+def test_repeated_deletion_returns_404(client):
+    product = Product(name="Single Use", price=Decimal("9.99"), stock=2)
+    db.session.add(product)
+    db.session.commit()
+    product_id = product.id
+
+    res1 = client.post(f"/products/{product_id}/delete", follow_redirects=True)
+    assert res1.status_code == 200
+    assert b"Product deleted successfully." in res1.data
+
+    res2 = client.post(f"/products/{product_id}/delete")
+    assert res2.status_code == 404
+    assert b"Product not found." in res2.data
+
+
+def test_delete_product_rejects_get_request(client):
+    product = Product(name="Safe Product", price=Decimal("29.99"), stock=4)
+    db.session.add(product)
+    db.session.commit()
+    product_id = product.id
+
+    response = client.get(f"/products/{product_id}/delete")
+    assert response.status_code in (405, 302, 400)
+
+    still_exists = db.session.get(Product, product_id)
+    assert still_exists is not None
+
+
+def test_failed_deletion_rolls_back_cleanly(client, monkeypatch):
+    product = Product(name="Error Product", price=Decimal("15.00"), stock=3)
+    db.session.add(product)
+    db.session.commit()
+    product_id = product.id
+
+    def mock_commit():
+        raise Exception("Database failure simulation")
+
+    monkeypatch.setattr(db.session, "commit", mock_commit)
+
+    response = client.post(f"/products/{product_id}/delete", follow_redirects=True)
+    assert response.status_code == 200
+    assert b"The product could not be deleted. Please try again." in response.data
+
+    monkeypatch.undo()
+    still_exists = db.session.get(Product, product_id)
+    assert still_exists is not None
+
+
+def test_delete_product_with_sales_history_is_rejected_and_preserves_records(client):
+    from app.business.sales import create_sale
+
+    product = Product(name="Historical Item", price=Decimal("100.00"), stock=10)
+    db.session.add(product)
+    db.session.commit()
+    product_id = product.id
+
+    sale = create_sale([{"product_id": product_id, "quantity": 2}], Product)
+    sale_id = sale.id
+
+    response = client.post(f"/products/{product_id}/delete", follow_redirects=True)
+    assert response.status_code == 200
+    assert b"Cannot delete product with existing sales records." in response.data
+
+    still_exists = db.session.get(Product, product_id)
+    assert still_exists is not None
+    assert still_exists.name == "Historical Item"
+
+    invoice_resp = client.get(f"/sales/{sale_id}/invoice")
+    assert invoice_resp.status_code == 200
+    assert b"Sales Invoice" in invoice_resp.data
+    assert b"Historical Item" in invoice_resp.data
+    assert b"200.00" in invoice_resp.data

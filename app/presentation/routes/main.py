@@ -13,7 +13,7 @@ from flask import (
 
 from app.business.sales import SaleValidationError, create_sale
 from app.data.extensions import db
-from app.data.models import Product, Sale
+from app.data.models import Product, Sale, SaleItem
 
 
 main_bp = Blueprint("main", __name__)
@@ -161,3 +161,29 @@ def edit_product(product_id):
 @main_bp.route("/products/<int:product_id>/update", methods=["GET", "POST"])
 def update_product(product_id):
     return edit_product(product_id)
+
+
+@main_bp.route("/products/<int:product_id>/delete", methods=["POST", "DELETE"])
+def delete_product(product_id):
+    product = db.session.get(Product, product_id)
+    if product is None:
+        abort(404, description="Product not found.")
+
+    has_sales = db.session.execute(
+        db.select(SaleItem).filter_by(product_id=product.id)
+    ).first() is not None
+
+    if has_sales:
+        flash("Cannot delete product with existing sales records.", "error")
+        return redirect(url_for("main.home"))
+
+    try:
+        db.session.delete(product)
+        db.session.commit()
+        flash("Product deleted successfully.", "success")
+    except Exception:
+        db.session.rollback()
+        current_app.logger.exception("Unable to delete product")
+        flash("The product could not be deleted. Please try again.", "error")
+
+    return redirect(url_for("main.home"))
