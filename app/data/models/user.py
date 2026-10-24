@@ -14,6 +14,9 @@ class User(UserMixin, db.Model):
     role = db.Column(
         db.String(20), nullable=False, default="staff"
     )
+    is_active = db.Column(
+        db.Boolean, nullable=False, default=True, server_default=db.true()
+    )
 
     def set_password(self, password):
         from app.business.security import hash_password
