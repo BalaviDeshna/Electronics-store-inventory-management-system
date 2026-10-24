@@ -68,10 +68,8 @@ def create_sale(items, product_model):
 
         quantities[product_id] = quantities.get(product_id, 0) + quantity
 
-    sale = Sale(total_amount=Decimal("0.00"))
-    total = Decimal("0.00")
-
     try:
+        validated_items = []
         for product_id in sorted(quantities):
             query = db.session.query(product_model).filter_by(id=product_id)
 
@@ -89,8 +87,9 @@ def create_sale(items, product_model):
             stock = int(product.stock)
 
             if stock < quantity:
+                product_name = getattr(product, "name", str(product_id))
                 raise SaleValidationError(
-                    f"Insufficient stock for product {product_id}."
+                    f"Insufficient stock for product {product_id} ({product_name}). Available: {stock}, requested: {quantity}."
                 )
 
             unit_price = money(product.price)
@@ -101,7 +100,14 @@ def create_sale(items, product_model):
                 )
 
             line_total = money(unit_price * quantity)
+            validated_items.append(
+                (product, product_id, quantity, unit_price, line_total)
+            )
 
+        sale = Sale(total_amount=Decimal("0.00"))
+        total = Decimal("0.00")
+
+        for product, product_id, quantity, unit_price, line_total in validated_items:
             sale.items.append(
                 SaleItem(
                     product_id=product_id,
@@ -112,7 +118,7 @@ def create_sale(items, product_model):
                 )
             )
 
-            product.stock = stock - quantity
+            product.stock = int(product.stock) - quantity
             total += line_total
 
         sale.total_amount = money(total)
