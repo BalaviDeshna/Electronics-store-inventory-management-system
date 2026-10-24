@@ -3,10 +3,16 @@ from decimal import Decimal
 
 import pytest
 
+from app.business.sales import create_sale, SaleValidationError
+from app.business.stock import (
+    StockUpdateError,
+    process_return,
+    restock_inventory,
+    restock_product,
+)
 from app.data.extensions import db
 from app.data.models.sale import Sale, SaleItem
-from app.business.sales import create_sale, SaleValidationError
-import app.presentation.routes.main as sales_routes
+from app.data.models.stock import ProductRestock, ProductReturn
 
 class Product(db.Model):
     """Test-only product model; not the team's production model."""
@@ -411,3 +417,345 @@ def test_successful_multi_product_sale_records_items_totals_and_stock(app, clien
         assert db.session.get(Product, keyboard_id).stock == 3
         assert db.session.get(Product, mouse_id).stock == 1
         assert Sale.query.count() == 1
+
+
+def test_stock_auto_deducted_after_successful_sale(app):
+    with app.app_context():
+        product = add_product("Wireless Router", "69.99", 10)
+        sale = create_sale(
+            [{"product_id": product.id, "quantity": 4}],
+            Product,
+        )
+
+        assert sale is not None
+        assert db.session.get(Product, product.id).stock == 6
+
+
+def test_stock_unchanged_after_failed_sale(app):
+    with app.app_context():
+        product = add_product("Gaming Console", "499.99", 3)
+
+        with pytest.raises(SaleValidationError):
+            create_sale(
+                [{"product_id": product.id, "quantity": 4}],
+                Product,
+            )
+
+        assert db.session.get(Product, product.id).stock == 3
+        assert Sale.query.count() == 0
+
+
+def test_stock_auto_increased_after_valid_return_by_sale_item(app):
+    with app.app_context():
+        product = add_product("Mechanical Keyboard", "80.00", 10)
+        sale = create_sale(
+            [{"product_id": product.id, "quantity": 3}],
+            Product,
+        )
+        assert db.session.get(Product, product.id).stock == 7
+        sale_item = sale.items[0]
+
+        returned_product = process_return(
+            sale_item_id=sale_item.id,
+            quantity=2,
+            return_id="RET-001",
+            product_model=Product,
+        )
+
+        assert returned_product.stock == 9
+        assert db.session.get(Product, product.id).stock == 9
+
+        return_rec = ProductReturn.query.filter_by(return_id="RET-001").first()
+        assert return_rec is not None
+        assert return_rec.quantity == 2
+        assert return_rec.product_id == product.id
+        assert return_rec.sale_item_id == sale_item.id
+
+
+def test_return_rejects_quantity_exceeding_purchased_amount(app):
+    with app.app_context():
+        product = add_product("Bluetooth Speaker", "40.00", 5)
+        sale = create_sale(
+            [{"product_id": product.id, "quantity": 2}],
+            Product,
+        )
+        assert db.session.get(Product, product.id).stock == 3
+        sale_item = sale.items[0]
+
+        with pytest.raises(StockUpdateError) as exc_info:
+            process_return(
+                sale_item_id=sale_item.id,
+                quantity=3,
+                product_model=Product,
+            )
+
+        assert "Cannot return 3 units" in str(exc_info.value)
+        assert db.session.get(Product, product.id).stock == 3
+
+
+def test_return_prevents_duplicate_processing_via_return_id(app):
+    with app.app_context():
+        product = add_product("USB-C Hub", "25.00", 8)
+        sale = create_sale(
+            [{"product_id": product.id, "quantity": 2}],
+            Product,
+        )
+        assert db.session.get(Product, product.id).stock == 6
+        sale_item = sale.items[0]
+
+        # First return succeeds
+        process_return(
+            sale_item_id=sale_item.id,
+            quantity=1,
+            return_id="RET-UNIQUE-101",
+            product_model=Product,
+        )
+        assert db.session.get(Product, product.id).stock == 7
+
+        # Duplicate return with same return_id fails
+        with pytest.raises(StockUpdateError) as exc_info:
+            process_return(
+                sale_item_id=sale_item.id,
+                quantity=1,
+                return_id="RET-UNIQUE-101",
+                product_model=Product,
+            )
+
+        assert "already been processed" in str(exc_info.value)
+        # Stock must remain unchanged after duplicate attempt
+        assert db.session.get(Product, product.id).stock == 7
+
+
+def test_return_prevents_cumulative_returns_exceeding_sale_quantity(app):
+    with app.app_context():
+        product = add_product("Webcam", "50.00", 10)
+        sale = create_sale(
+            [{"product_id": product.id, "quantity": 2}],
+            Product,
+        )
+        assert db.session.get(Product, product.id).stock == 8
+        sale_item = sale.items[0]
+
+        # Return 1 of 2
+        process_return(
+            sale_item_id=sale_item.id,
+            quantity=1,
+            return_id="RET-PART-1",
+            product_model=Product,
+        )
+        assert db.session.get(Product, product.id).stock == 9
+
+        # Return second of 2
+        process_return(
+            sale_item_id=sale_item.id,
+            quantity=1,
+            return_id="RET-PART-2",
+            product_model=Product,
+        )
+        assert db.session.get(Product, product.id).stock == 10
+
+        # Attempt third return exceeds purchased amount
+        with pytest.raises(StockUpdateError):
+            process_return(
+                sale_item_id=sale_item.id,
+                quantity=1,
+                return_id="RET-PART-3",
+                product_model=Product,
+            )
+
+        assert db.session.get(Product, product.id).stock == 10
+
+
+def test_standalone_product_return_increases_stock(app):
+    with app.app_context():
+        product = add_product("Wireless Earbuds", "120.00", 4)
+
+        returned = process_return(
+            product_id=product.id,
+            quantity=3,
+            return_id="RET-STANDALONE-01",
+            product_model=Product,
+        )
+
+        assert returned.stock == 7
+        assert db.session.get(Product, product.id).stock == 7
+        rec = ProductReturn.query.filter_by(return_id="RET-STANDALONE-01").first()
+        assert rec is not None
+        assert rec.quantity == 3
+
+
+@pytest.mark.parametrize("invalid_qty", [0, -1, -5, "abc", 1.5, True, False])
+def test_return_rejects_invalid_quantity(app, invalid_qty):
+    with app.app_context():
+        product = add_product("Monitor Stand", "30.00", 6)
+
+        with pytest.raises(StockUpdateError):
+            process_return(
+                product_id=product.id,
+                quantity=invalid_qty,
+                product_model=Product,
+            )
+
+        assert db.session.get(Product, product.id).stock == 6
+
+
+def test_return_rejects_invalid_product_reference(app):
+    with app.app_context():
+        with pytest.raises(StockUpdateError):
+            process_return(
+                product_id=999999,
+                quantity=2,
+                product_model=Product,
+            )
+
+
+def test_stock_auto_increased_after_restocking(app):
+    with app.app_context():
+        product = add_product("Microphone Stand", "25.00", 5)
+
+        restocked = restock_product(
+            product.id,
+            15,
+            reference="PO-2026-001",
+            product_model=Product,
+        )
+
+        assert restocked.stock == 20
+        assert db.session.get(Product, product.id).stock == 20
+
+        rec = ProductRestock.query.filter_by(reference="PO-2026-001").first()
+        assert rec is not None
+        assert rec.quantity == 15
+        assert rec.product_id == product.id
+
+
+@pytest.mark.parametrize("invalid_qty", [0, -1, -20, "xyz", 3.14, True, False])
+def test_restock_rejects_invalid_quantities(app, invalid_qty):
+    with app.app_context():
+        product = add_product("HDMI Adapter", "15.00", 8)
+
+        with pytest.raises(StockUpdateError):
+            restock_product(
+                product.id,
+                invalid_qty,
+                product_model=Product,
+            )
+
+        assert db.session.get(Product, product.id).stock == 8
+        assert ProductRestock.query.count() == 0
+
+
+def test_restock_rejects_nonexistent_product(app):
+    with app.app_context():
+        with pytest.raises(StockUpdateError):
+            restock_product(
+                888888,
+                10,
+                product_model=Product,
+            )
+
+
+def test_batch_restock_atomic_success_and_failure(app):
+    with app.app_context():
+        p1 = add_product("Item A", "10.00", 5)
+        p2 = add_product("Item B", "20.00", 2)
+        p1_id, p2_id = p1.id, p2.id
+
+        # Batch restock success
+        restock_inventory(
+            [
+                {"product_id": p1_id, "quantity": 5},
+                {"product_id": p2_id, "quantity": 8},
+            ],
+            product_model=Product,
+        )
+
+        assert db.session.get(Product, p1_id).stock == 10
+        assert db.session.get(Product, p2_id).stock == 10
+
+        # Batch restock failure leaves all stocks unchanged (atomic consistency)
+        with pytest.raises(StockUpdateError):
+            restock_inventory(
+                [
+                    {"product_id": p1_id, "quantity": 5},
+                    {"product_id": 999999, "quantity": 10},
+                ],
+                product_model=Product,
+            )
+
+        assert db.session.get(Product, p1_id).stock == 10
+        assert db.session.get(Product, p2_id).stock == 10
+
+
+def test_restock_route_updates_stock_successfully(app, client):
+    with app.app_context():
+        product = add_product("USB Mouse", "12.00", 4)
+        product_id = product.id
+
+    response = client.post(
+        f"/products/{product_id}/restock",
+        data={"quantity": "8", "reference": "SHIPMENT-101"},
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Stock updated successfully." in response.data
+
+    with app.app_context():
+        assert db.session.get(Product, product_id).stock == 12
+
+
+def test_restock_route_rejects_invalid_quantity(app, client):
+    with app.app_context():
+        product = add_product("USB Mouse", "12.00", 4)
+        product_id = product.id
+
+    response = client.post(
+        f"/products/{product_id}/restock",
+        data={"quantity": "-5"},
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"greater than zero" in response.data
+
+    with app.app_context():
+        assert db.session.get(Product, product_id).stock == 4
+
+
+def test_return_route_updates_stock_and_blocks_duplicate(app, client):
+    with app.app_context():
+        product = add_product("Desk Lamp", "45.00", 3)
+        product_id = product.id
+
+    # First return via route succeeds
+    res1 = client.post(
+        "/returns",
+        data={
+            "product_id": str(product_id),
+            "quantity": "2",
+            "return_id": "WEB-RET-01",
+        },
+        follow_redirects=True,
+    )
+    assert res1.status_code == 200
+    assert b"Return processed successfully" in res1.data
+
+    with app.app_context():
+        assert db.session.get(Product, product_id).stock == 5
+
+    # Second return via route with duplicate return_id is blocked
+    res2 = client.post(
+        "/returns",
+        data={
+            "product_id": str(product_id),
+            "quantity": "2",
+            "return_id": "WEB-RET-01",
+        },
+        follow_redirects=True,
+    )
+    assert res2.status_code == 200
+    assert b"already been processed" in res2.data
+
+    with app.app_context():
+        assert db.session.get(Product, product_id).stock == 5
