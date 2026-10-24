@@ -65,7 +65,10 @@ def test_create_user_page_requires_login(client):
 def test_create_user_success(client, logged_in_admin):
     response = client.post(
         "/users/create",
-        data={"username": "new-staff", "password": "StrongPass123"},
+        data={"username": "new-staff",
+              "password": "StrongPass123",
+              "role": "staff",
+        },
         follow_redirects=True,
     )
     assert response.status_code == 200
@@ -83,7 +86,10 @@ def test_duplicate_username_is_rejected(client, logged_in_admin):
 
     response = client.post(
         "/users/create",
-        data={"username": "existing-user", "password": "AnotherPass123"},
+        data={"username": "existing-user",
+              "password": "AnotherPass123",
+              "role": "staff",
+        },
         follow_redirects=True,
     )
     assert b"That username is already taken." in response.data
@@ -93,7 +99,9 @@ def test_duplicate_username_is_rejected(client, logged_in_admin):
 def test_empty_username_is_rejected(client, logged_in_admin):
     response = client.post(
         "/users/create",
-        data={"username": "   ", "password": "StrongPass123"},
+        data={"username": "   ",
+              "password": "StrongPass123"
+        },
         follow_redirects=True,
     )
     assert b"Username is required." in response.data
@@ -102,19 +110,64 @@ def test_empty_username_is_rejected(client, logged_in_admin):
 def test_short_password_is_rejected(client, logged_in_admin):
     response = client.post(
         "/users/create",
-        data={"username": "short-pass", "password": "123"},
+        data={"username": "short-pass",
+              "password": "123"
+        },
         follow_redirects=True,
     )
     assert b"Password must be at least 8 characters." in response.data
 
-
 def test_staff_cannot_create_accounts(client, logged_in_staff):
     response = client.post(
         "/users/create",
-        data={"username": "not-allowed", "password": "StrongPass123"},
+        data={"username": "not-allowed",
+              "password": "StrongPass123"
+        },
     )
     assert response.status_code in (302, 403)
     assert User.query.filter_by(username="not-allowed").first() is None
+
+def test_admin_can_create_staff_user(client, logged_in_admin):
+    response = client.post(
+        "/users/create",
+        data={
+            "username": "new-staff-role",
+            "password": "StrongPass123",
+            "role": "staff",
+        },
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    user = User.query.filter_by(username="new-staff-role").one()
+    assert user.role == "staff"
+
+
+def test_admin_can_assign_admin_role(client, logged_in_admin):
+    response = client.post(
+        "/users/create",
+        data={
+            "username": "new-admin-role",
+            "password": "StrongPass123",
+            "role": "admin",
+        },
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    user = User.query.filter_by(username="new-admin-role").one()
+    assert user.role == "admin"
+
+
+def test_invalid_role_is_rejected(client, logged_in_admin):
+    response = client.post(
+        "/users/create",
+        data={
+            "username": "bad-role-user",
+            "password": "StrongPass123",
+            "role": "superuser",
+        },
+    )
+    assert response.status_code == 400
+    assert User.query.filter_by(username="bad-role-user").first() is None
 
 def test_logout_redirects(client):
     response = client.post("/logout")

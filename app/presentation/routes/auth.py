@@ -6,7 +6,7 @@ from app.data.extensions import db
 from app.presentation.authz import admin_required
 
 auth_bp = Blueprint("auth", __name__)
-
+ALLOWED_ROLES = {"admin", "staff"}
 
 @auth_bp.route("/login", methods=["GET", "POST"])
 def login():
@@ -33,6 +33,11 @@ def create_user():
     if request.method == "POST":
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
+        role = request.form.get("role", "staff").strip().lower()
+
+        if role not in ALLOWED_ROLES:
+            flash("Choose a valid role.", "error")
+            return render_template("create_user.html"), 400
 
         if not username:
             flash("Username is required.", "error")
@@ -54,7 +59,7 @@ def create_user():
             flash("That username is already taken.", "error")
             return render_template("create_user.html"), 409
 
-        user = User(username=username)
+        user = User(username=username, role=role)
         user.set_password(password)
         db.session.add(user)
 
