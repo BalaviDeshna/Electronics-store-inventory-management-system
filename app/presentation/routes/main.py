@@ -1,6 +1,6 @@
 from decimal import Decimal, InvalidOperation
 
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 from flask import (
     Blueprint,
@@ -21,9 +21,26 @@ from app.data.models import Product, Sale, SaleItem
 main_bp = Blueprint("main", __name__)
 
 
+def normalize_stock_status(val):
+    if not val:
+        return ""
+    normalized = str(val).strip().lower().replace("-", "_").replace(" ", "_")
+    if normalized in {"in_stock", "instock"}:
+        return "in_stock"
+    if normalized in {"out_of_stock", "outofstock", "out"}:
+        return "out_of_stock"
+    if normalized in {"low_stock", "lowstock", "low"}:
+        return "low_stock"
+    return ""
+
+
 @main_bp.route("/")
 def home():
     q = request.args.get("q", "").strip()
+    category = request.args.get("category", "").strip()
+    raw_status = request.args.get("stock_status") or request.args.get("status") or ""
+    stock_status = normalize_stock_status(raw_status)
+
     query_obj = Product.query
     if q:
         conditions = [Product.name.ilike(f"%{q}%")]
@@ -31,14 +48,45 @@ def home():
             conditions.append(Product.sku.ilike(f"%{q}%"))
         query_obj = query_obj.filter(or_(*conditions))
 
+    if category and hasattr(Product, "category"):
+        query_obj = query_obj.filter(func.lower(Product.category) == category.lower())
+
+    if hasattr(Product, "stock"):
+        if stock_status == "in_stock":
+            query_obj = query_obj.filter(Product.stock > 0)
+        elif stock_status == "out_of_stock":
+            query_obj = query_obj.filter(Product.stock == 0)
+        elif stock_status == "low_stock":
+            query_obj = query_obj.filter(Product.stock > 0, Product.stock <= 5)
+
     products = query_obj.order_by(Product.name).all()
     all_products = Product.query.order_by(Product.name).all()
+
+    categories = []
+    if hasattr(Product, "category"):
+        raw_cats = (
+            db.session.query(Product.category)
+            .filter(Product.category.isnot(None), Product.category != "")
+            .distinct()
+            .order_by(Product.category)
+            .all()
+        )
+        categories = [c[0] for c in raw_cats if c[0]]
+        if category and category.lower() not in [c.lower() for c in categories]:
+            categories.append(category)
+            categories.sort(key=str.lower)
+
     return render_template(
         "index.html",
         products=products,
         all_products=all_products,
         q=q,
         query=q,
+        categories=categories,
+        selected_category=category,
+        category=category,
+        selected_stock_status=stock_status,
+        stock_status=stock_status,
     )
 
 
@@ -85,6 +133,7 @@ def create_product():
     if request.method == "POST":
         name = request.form.get("name", "").strip()
         raw_sku = request.form.get("sku", "").strip()
+        raw_category = request.form.get("category", "").strip()
         raw_price = request.form.get("price", "").strip()
         raw_stock = request.form.get("stock", "").strip()
 
@@ -109,6 +158,11 @@ def create_product():
                 flash("A product with this SKU already exists.", "error")
                 return render_template("create_product.html")
 
+        category = raw_category if raw_category else None
+        if category and len(category) > 100:
+            flash("Category must be 100 characters or fewer.", "error")
+            return render_template("create_product.html")
+
         try:
             price = Decimal(raw_price)
             if not price.is_finite() or price < 0:
@@ -126,7 +180,10 @@ def create_product():
             flash("Stock must be a non-negative whole number.", "error")
             return render_template("create_product.html")
 
-        product = Product(name=name, sku=sku, price=price, stock=stock)
+        kwargs = {"name": name, "sku": sku, "price": price, "stock": stock}
+        if hasattr(Product, "category"):
+            kwargs["category"] = category
+        product = Product(**kwargs)
         db.session.add(product)
         try:
             db.session.commit()
@@ -155,6 +212,7 @@ def edit_product(product_id):
     if request.method == "POST":
         name = request.form.get("name", "").strip()
         raw_sku = request.form.get("sku", "").strip()
+        raw_category = request.form.get("category", "").strip()
         raw_price = request.form.get("price", "").strip()
         raw_stock = request.form.get("stock", "").strip()
 
@@ -179,6 +237,11 @@ def edit_product(product_id):
                 flash("A product with this SKU already exists.", "error")
                 return render_template("edit_product.html", product=product)
 
+        category = raw_category if raw_category else None
+        if category and len(category) > 100:
+            flash("Category must be 100 characters or fewer.", "error")
+            return render_template("edit_product.html", product=product)
+
         try:
             price = Decimal(raw_price)
             if not price.is_finite() or price < 0:
@@ -198,6 +261,8 @@ def edit_product(product_id):
 
         product.name = name
         product.sku = sku
+        if hasattr(product, "category"):
+            product.category = category
         product.price = price
         product.stock = stock
         try:

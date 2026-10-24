@@ -603,3 +603,207 @@ def test_sku_displayed_in_inventory_table(client):
     assert response.status_code == 200
     assert b"PB-20000" in response.data
     assert b"Power Bank" in response.data
+
+
+def test_category_displayed_in_inventory_table(client):
+    product = Product(name="Smart Watch", sku="SW-01", category="Wearables", price=Decimal("199.99"), stock=8)
+    db.session.add(product)
+    db.session.commit()
+
+    response = client.get("/")
+    assert response.status_code == 200
+    assert b"Wearables" in response.data
+    assert b"Smart Watch" in response.data
+
+
+def test_filter_by_category_exact(client):
+    p1 = Product(name="Noise Cancelling Headphones", sku="AUDIO-01", category="Audio", price=Decimal("250.00"), stock=5)
+    p2 = Product(name="Gaming Laptop", sku="COMP-01", category="Computers", price=Decimal("1200.00"), stock=3)
+    db.session.add_all([p1, p2])
+    db.session.commit()
+
+    response = client.get("/?category=Audio")
+    assert response.status_code == 200
+    assert b"<td>Noise Cancelling Headphones</td>" in response.data
+    assert b"<td>Gaming Laptop</td>" not in response.data
+    assert b"COMP-01" not in response.data
+
+
+def test_filter_by_category_case_insensitive(client):
+    p1 = Product(name="Galaxy S24", sku="PHONE-01", category="Smartphones", price=Decimal("899.99"), stock=10)
+    db.session.add(p1)
+    db.session.commit()
+
+    response = client.get("/?category=smartphones")
+    assert response.status_code == 200
+    assert b"<td>Galaxy S24</td>" in response.data
+
+
+def test_filter_by_category_preserves_selected_option(client):
+    p1 = Product(name="Headset", sku="HEAD-01", category="Audio", price=Decimal("49.99"), stock=4)
+    db.session.add(p1)
+    db.session.commit()
+
+    response = client.get("/?category=Audio")
+    assert response.status_code == 200
+    assert b'<option value="Audio" selected>Audio</option>' in response.data or b'selected>Audio</option>' in response.data
+
+
+def test_filter_by_stock_status_in_stock(client):
+    p1 = Product(name="In Stock Mouse", sku="STK-IN", price=Decimal("20.00"), stock=10)
+    p2 = Product(name="Out of Stock Keyboard", sku="STK-OUT", price=Decimal("50.00"), stock=0)
+    db.session.add_all([p1, p2])
+    db.session.commit()
+
+    response = client.get("/?stock_status=in_stock")
+    assert response.status_code == 200
+    assert b"<td>In Stock Mouse</td>" in response.data
+    assert b"<td>Out of Stock Keyboard</td>" not in response.data
+    assert b"STK-OUT" not in response.data
+
+
+def test_filter_by_stock_status_out_of_stock(client):
+    p1 = Product(name="In Stock Mouse", sku="STK-IN", price=Decimal("20.00"), stock=10)
+    p2 = Product(name="Out of Stock Keyboard", sku="STK-OUT", price=Decimal("50.00"), stock=0)
+    db.session.add_all([p1, p2])
+    db.session.commit()
+
+    response = client.get("/?stock_status=out_of_stock")
+    assert response.status_code == 200
+    assert b"<td>Out of Stock Keyboard</td>" in response.data
+    assert b"<td>In Stock Mouse</td>" not in response.data
+    assert b"STK-IN" not in response.data
+
+
+def test_filter_by_stock_status_low_stock(client):
+    p_low1 = Product(name="Low Stock Item 1", sku="LOW-1", price=Decimal("10.00"), stock=1)
+    p_low5 = Product(name="Low Stock Item 5", sku="LOW-5", price=Decimal("15.00"), stock=5)
+    p_plenty = Product(name="Plenty Stock Item", sku="PLENTY-20", price=Decimal("20.00"), stock=20)
+    p_out = Product(name="No Stock Item", sku="NO-0", price=Decimal("30.00"), stock=0)
+    db.session.add_all([p_low1, p_low5, p_plenty, p_out])
+    db.session.commit()
+
+    response = client.get("/?stock_status=low_stock")
+    assert response.status_code == 200
+    assert b"<td>Low Stock Item 1</td>" in response.data
+    assert b"<td>Low Stock Item 5</td>" in response.data
+    assert b"<td>Plenty Stock Item</td>" not in response.data
+    assert b"<td>No Stock Item</td>" not in response.data
+    assert b"PLENTY-20" not in response.data
+    assert b"NO-0" not in response.data
+
+
+def test_filter_by_combined_category_and_stock_status(client):
+    p1 = Product(name="Pro Mouse", sku="PRO-MOU", category="Accessories", price=Decimal("50.00"), stock=3)
+    p2 = Product(name="Old Mouse", sku="OLD-MOU", category="Accessories", price=Decimal("15.00"), stock=0)
+    p3 = Product(name="Gaming Monitor", sku="DISP-01", category="Displays", price=Decimal("300.00"), stock=4)
+    db.session.add_all([p1, p2, p3])
+    db.session.commit()
+
+    response = client.get("/?category=Accessories&stock_status=in_stock")
+    assert response.status_code == 200
+    assert b"<td>Pro Mouse</td>" in response.data
+    assert b"<td>Old Mouse</td>" not in response.data
+    assert b"<td>Gaming Monitor</td>" not in response.data
+    assert b"OLD-MOU" not in response.data
+    assert b"DISP-01" not in response.data
+
+
+def test_filter_combined_with_search_query(client):
+    p1 = Product(name="Gaming Mouse", sku="GM-01", category="Accessories", price=Decimal("60.00"), stock=8)
+    p2 = Product(name="Gaming Laptop", sku="GL-01", category="Computers", price=Decimal("1500.00"), stock=5)
+    p3 = Product(name="Office Mouse", sku="OM-01", category="Accessories", price=Decimal("20.00"), stock=10)
+    db.session.add_all([p1, p2, p3])
+    db.session.commit()
+
+    response = client.get("/?q=Gaming&category=Accessories&stock_status=in_stock")
+    assert response.status_code == 200
+    assert b"<td>Gaming Mouse</td>" in response.data
+    assert b"<td>Gaming Laptop</td>" not in response.data
+    assert b"<td>Office Mouse</td>" not in response.data
+    assert b"GL-01" not in response.data
+    assert b"OM-01" not in response.data
+
+
+def test_filter_empty_results_shows_message_and_clear_filters(client):
+    p1 = Product(name="USB Cable", sku="CABLE-01", category="Accessories", price=Decimal("5.00"), stock=10)
+    db.session.add(p1)
+    db.session.commit()
+
+    response = client.get("/?category=Appliances")
+    assert response.status_code == 200
+    assert b"No products found matching your filters." in response.data
+    assert b"Clear filters" in response.data
+    assert b"<td>USB Cable</td>" not in response.data
+    assert b"CABLE-01" not in response.data
+
+
+def test_invalid_stock_status_ignored_safely(client):
+    p1 = Product(name="Monitor", price=Decimal("200.00"), stock=5)
+    db.session.add(p1)
+    db.session.commit()
+
+    response = client.get("/?stock_status=invalid_random_status")
+    assert response.status_code == 200
+    assert b"Monitor" in response.data
+
+
+def test_categories_dropdown_lists_distinct_categories(client):
+    p1 = Product(name="Mouse", category="Peripherals", price=Decimal("20.00"), stock=5)
+    p2 = Product(name="Keyboard", category="Peripherals", price=Decimal("50.00"), stock=3)
+    p3 = Product(name="Speakers", category="Audio", price=Decimal("80.00"), stock=2)
+    p4 = Product(name="Generic Cable", category=None, price=Decimal("10.00"), stock=10)
+    db.session.add_all([p1, p2, p3, p4])
+    db.session.commit()
+
+    response = client.get("/")
+    assert response.status_code == 200
+    assert b'value="Peripherals"' in response.data
+    assert b'value="Audio"' in response.data
+
+
+def test_create_product_with_category_success(client):
+    response = client.post(
+        "/products/create",
+        data={
+            "name": "Noise Cancelling Earbuds",
+            "sku": "EAR-NC-100",
+            "category": "Audio",
+            "price": "129.99",
+            "stock": "15",
+        },
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert b"Product created successfully." in response.data
+
+    created = db.session.execute(
+        db.select(Product).filter_by(name="Noise Cancelling Earbuds")
+    ).scalar_one()
+    assert created.category == "Audio"
+    assert created.sku == "EAR-NC-100"
+
+
+def test_edit_product_with_category_success(client):
+    product = Product(name="Microphone", sku="MIC-001", category="Audio", price=Decimal("79.99"), stock=7)
+    db.session.add(product)
+    db.session.commit()
+    product_id = product.id
+
+    response = client.post(
+        f"/products/{product_id}/edit",
+        data={
+            "name": "Studio Microphone",
+            "sku": "MIC-001",
+            "category": "Studio Equipment",
+            "price": "99.99",
+            "stock": "7",
+        },
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert b"Product updated successfully." in response.data
+
+    updated = db.session.get(Product, product_id)
+    assert updated.name == "Studio Microphone"
+    assert updated.category == "Studio Equipment"
