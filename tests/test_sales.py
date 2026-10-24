@@ -370,3 +370,44 @@ def test_create_sale_route_rejects_empty_items(client):
     assert response.status_code == 200
     assert b"at least one item" in response.data or b"Invalid sale form" in response.data
     assert Sale.query.count() == 0
+
+
+
+
+def test_successful_multi_product_sale_records_items_totals_and_stock(app, client):
+    """Verify checkout records multiple products in one sale."""
+    with app.app_context():
+        keyboard = add_product("Keyboard", "25.00", 5)
+        mouse = add_product("Mouse", "15.00", 4)
+        keyboard_id = keyboard.id
+        mouse_id = mouse.id
+
+    response = client.post(
+        "/sales",
+        data={
+            "product_id": [str(keyboard_id), str(mouse_id)],
+            "quantity": ["2", "3"],
+        },
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Keyboard" in response.data
+    assert b"Mouse" in response.data
+    assert b"95.00" in response.data
+
+    with app.app_context():
+        sale = Sale.query.order_by(Sale.id.desc()).first()
+        assert sale is not None
+        assert sale.total_amount == Decimal("95.00")
+        assert len(sale.items) == 2
+
+        items = {item.product_id: item for item in sale.items}
+        assert items[keyboard_id].quantity == 2
+        assert items[keyboard_id].line_total == Decimal("50.00")
+        assert items[mouse_id].quantity == 3
+        assert items[mouse_id].line_total == Decimal("45.00")
+
+        assert db.session.get(Product, keyboard_id).stock == 3
+        assert db.session.get(Product, mouse_id).stock == 1
+        assert Sale.query.count() == 1
