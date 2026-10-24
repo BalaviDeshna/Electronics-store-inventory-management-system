@@ -42,7 +42,7 @@ def test_wrong_password_is_rejected(client, app):
         },
         follow_redirects=True,
     )
-    assert b"Invalid username or password." in response.data
+    assert b"Invalid username or password, or account deactivated." in response.data
 
 
 def test_unknown_username_is_rejected(client):
@@ -54,7 +54,7 @@ def test_unknown_username_is_rejected(client):
         },
         follow_redirects=True,
     )
-    assert b"Invalid username or password." in response.data
+    assert b"Invalid username or password, or account deactivated." in response.data
 
 def test_create_user_page_requires_login(client):
     response = client.get("/users/create")
@@ -172,3 +172,57 @@ def test_invalid_role_is_rejected(client, logged_in_admin):
 def test_logout_redirects(client):
     response = client.post("/logout")
     assert response.status_code == 302
+    
+def test_staff_cannot_list_users(client, logged_in_staff):
+    response = client.get("/users")
+    assert response.status_code == 403
+
+
+def test_admin_can_edit_user_role(client, app, logged_in_admin):
+    user = User(username="edit-me", role="staff")
+    user.set_password("StrongPass123")
+    db.session.add(user)
+    db.session.commit()
+
+    response = client.post(
+        f"/users/{user.id}/edit",
+        data={"username": "edit-me", "role": "admin"},
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert user.role == "admin"
+
+
+def test_admin_can_deactivate_user(client, app, logged_in_admin):
+    user = User(username="disable-me", role="staff")
+    user.set_password("StrongPass123")
+    db.session.add(user)
+    db.session.commit()
+
+    response = client.post(
+        f"/users/{user.id}/deactivate",
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert user.is_active is False
+
+
+def test_deactivated_user_cannot_login(client, app):
+    user = User(
+        username="inactive-user",
+        role="staff",
+        is_active=False,
+    )
+    user.set_password("StrongPass123")
+    db.session.add(user)
+    db.session.commit()
+
+    response = client.post(
+        "/login",
+        data={
+            "username": "inactive-user",
+            "password": "StrongPass123",
+        },
+        follow_redirects=True,
+    )
+    assert b"Invalid username or password" in response.data
