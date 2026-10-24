@@ -62,8 +62,26 @@ function addSaleItem() {
 <form method="GET" action="{{ url_for('main.home') }}" class="search-form">
     <label for="search-input">Search Products:</label>
     <input type="text" id="search-input" name="q" value="{{ q }}" placeholder="Search by name or SKU...">
-    <button type="submit">Search</button>
-    {% if q %}
+
+    <label for="category-filter">Category:</label>
+    <select id="category-filter" name="category">
+        <option value="">All Categories</option>
+        {% for cat in categories %}
+        <option value="{{ cat }}" {% if selected_category and selected_category|lower == cat|lower %}selected{% endif %}>{{ cat }}</option>
+        {% endfor %}
+    </select>
+
+    <label for="stock-status-filter">Stock Status:</label>
+    <select id="stock-status-filter" name="stock_status">
+        <option value="">All Statuses</option>
+        <option value="in_stock" {% if selected_stock_status == 'in_stock' %}selected{% endif %}>In Stock</option>
+        <option value="low_stock" {% if selected_stock_status == 'low_stock' %}selected{% endif %}>Low Stock</option>
+        <option value="out_of_stock" {% if selected_stock_status == 'out_of_stock' %}selected{% endif %}>Out of Stock</option>
+    </select>
+
+    <button type="submit">Filter</button>
+    {% if q or selected_category or selected_stock_status %}
+        <a href="{{ url_for('main.home') }}">Clear filters</a>
         <a href="{{ url_for('main.home') }}">Clear search</a>
     {% endif %}
 </form>
@@ -74,6 +92,7 @@ function addSaleItem() {
         <tr>
             <th>SKU</th>
             <th>Product</th>
+            <th>Category</th>
             <th>Price</th>
             <th>Stock</th>
             <th>Actions</th>
@@ -84,6 +103,7 @@ function addSaleItem() {
         <tr>
             <td>{{ product.sku or "—" }}</td>
             <td>{{ product.name }}</td>
+            <td>{{ product.category or "—" }}</td>
             <td>{{ "%.2f"|format(product.price) }}</td>
             <td>{{ product.stock }}</td>
             <td>
@@ -97,7 +117,13 @@ function addSaleItem() {
     </tbody>
 </table>
 {% else %}
-<p>No products found matching your search.</p>
+    {% if q and not (selected_category or selected_stock_status) %}
+        <p>No products found matching your search.</p>
+    {% elif (selected_category or selected_stock_status) and not q %}
+        <p>No products found matching your filters.</p>
+    {% else %}
+        <p>No products found matching your search or filters.</p>
+    {% endif %}
 {% endif %}
 {% else %}
 <p>No products are available yet. Ask the inventory team to add products first.</p>
