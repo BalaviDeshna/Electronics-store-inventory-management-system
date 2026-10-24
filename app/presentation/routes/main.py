@@ -14,6 +14,11 @@ from flask import (
 )
 
 from app.business.sales import SaleValidationError, create_sale
+from app.business.stock import (
+    StockUpdateError,
+    process_return,
+    restock_product,
+)
 from app.data.extensions import db
 from app.data.models import Product, Sale, SaleItem
 
@@ -311,4 +316,49 @@ def delete_product(product_id):
         current_app.logger.exception("Unable to delete product")
         flash("The product could not be deleted. Please try again.", "error")
 
+    return redirect(url_for("main.home"))
+
+
+@main_bp.route("/products/<int:product_id>/restock", methods=["POST"])
+def restock_product_route(product_id):
+    raw_qty = request.form.get("quantity", "").strip()
+    reference = request.form.get("reference", "").strip() or None
+    try:
+        restock_product(
+            product_id,
+            raw_qty,
+            reference=reference,
+            product_model=Product,
+        )
+        flash("Stock updated successfully.", "success")
+    except StockUpdateError as exc:
+        flash(str(exc), "error")
+    except Exception:
+        db.session.rollback()
+        current_app.logger.exception("Unable to restock product")
+        flash("The product could not be restocked. Please try again.", "error")
+    return redirect(url_for("main.home"))
+
+
+@main_bp.route("/returns", methods=["POST"])
+def process_return_route():
+    product_id = request.form.get("product_id")
+    sale_item_id = request.form.get("sale_item_id")
+    quantity = request.form.get("quantity")
+    return_id = request.form.get("return_id")
+    try:
+        process_return(
+            product_id=product_id.strip() if product_id and product_id.strip() else None,
+            sale_item_id=sale_item_id.strip() if sale_item_id and sale_item_id.strip() else None,
+            quantity=quantity.strip() if quantity and quantity.strip() else None,
+            return_id=return_id.strip() if return_id and return_id.strip() else None,
+            product_model=Product,
+        )
+        flash("Return processed successfully and stock updated.", "success")
+    except StockUpdateError as exc:
+        flash(str(exc), "error")
+    except Exception:
+        db.session.rollback()
+        current_app.logger.exception("Unable to process return")
+        flash("The return could not be processed. Please try again.", "error")
     return redirect(url_for("main.home"))

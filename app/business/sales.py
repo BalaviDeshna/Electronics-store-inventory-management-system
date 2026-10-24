@@ -1,5 +1,11 @@
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
+from app.business.stock import (
+    StockUpdateError,
+    process_return,
+    restock_inventory,
+    restock_product,
+)
 from app.data.extensions import db
 from app.data.models.sale import Sale, SaleItem
 
@@ -7,7 +13,7 @@ from app.data.models.sale import Sale, SaleItem
 CENT = Decimal("0.01")
 
 
-class SaleValidationError(ValueError):
+class SaleValidationError(StockUpdateError):
     """Raised when a requested sale is invalid."""
 
 
