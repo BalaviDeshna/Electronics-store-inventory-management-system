@@ -8,7 +8,7 @@ from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 from app.business.password_reset_email import send_reset_email
 
 auth_bp = Blueprint("auth", __name__)
-ALLOWED_ROLES = {"admin", "staff"}
+ALLOWED_ROLES = {"admin", "manager", "staff"}
 
 @auth_bp.route("/login", methods=["GET", "POST"])
 def login():

@@ -33,6 +33,7 @@
     <label for="role">Role</label>
     <select id="role" name="role" required>
         <option value="staff" {% if user.role == "staff" %}selected{% endif %}>Staff</option>
+        <option value="manager" {% if user.role == "manager" %}selected{% endif %}>Manager</option>
         <option value="admin" {% if user.role == "admin" %}selected{% endif %}>Admin</option>
     </select>
 

@@ -95,6 +95,7 @@ function addSaleItem() {
             <th>Category</th>
             <th>Price</th>
             <th>Stock</th>
+            <th>Threshold</th>
             <th>Actions</th>
         </tr>
     </thead>
@@ -106,6 +107,7 @@ function addSaleItem() {
             <td>{{ product.category or "—" }}</td>
             <td>{{ "%.2f"|format(product.price) }}</td>
             <td>{{ product.stock }}</td>
+            <td>{{ product.reorder_threshold if product.reorder_threshold is defined else 0 }}</td>
             <td>
                 <a href="{{ url_for('main.edit_product', product_id=product.id) }}">Edit</a>
                 <form action="{{ url_for('main.delete_product', product_id=product.id) }}" method="post" style="display:inline;" onsubmit="return confirm('Are you sure you want to delete this product?');">
