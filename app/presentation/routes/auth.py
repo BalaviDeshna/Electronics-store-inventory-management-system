@@ -4,6 +4,8 @@ from app.data.models import User
 from sqlalchemy.exc import IntegrityError
 from app.data.extensions import db
 from app.presentation.authz import admin_required
+from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
+from app.business.password_reset_email import send_reset_email
 
 auth_bp = Blueprint("auth", __name__)
 ALLOWED_ROLES = {"admin", "staff"}
@@ -31,6 +33,90 @@ def login():
     return render_template("login.html")
 
 
+def _reset_serializer():
+    return URLSafeTimedSerializer(current_app.config["SECRET_KEY"])
+
+
+def _make_reset_token(user):
+    return _reset_serializer().dumps(
+        {"user_id": user.id, "email": user.email},
+        salt="password-reset-v1",
+    )
+
+
+@auth_bp.route("/forgot-password", methods=["GET", "POST"])
+def forgot_password():
+    if request.method == "POST":
+        email = request.form.get("email", "").strip().lower()
+        user = User.query.filter_by(email=email, is_active=True).first()
+
+        # Same public response for known/unknown emails.
+        if user is not None:
+            token = _make_reset_token(user)
+            reset_url = url_for(
+                "auth.reset_password",
+                token=token,
+                _external=True,
+            )
+
+            try:
+                send_reset_email(user.email, reset_url)
+            except Exception:
+                current_app.logger.exception("Could not send reset email")
+
+        flash(
+            "If an active account uses that email, a reset link will be sent.",
+            "info",
+        )
+        return redirect(url_for("auth.login"))
+
+    return render_template("forgot_password.html")
+
+
+@auth_bp.route("/reset-password/<token>", methods=["GET", "POST"])
+def reset_password(token):
+    try:
+        data = _reset_serializer().loads(
+            token,
+            salt="password-reset-v1",
+            max_age=1800,
+        )
+    except (BadSignature, SignatureExpired):
+        flash("That reset link is invalid or has expired.", "error")
+        return redirect(url_for("auth.forgot_password"))
+
+    user = db.session.get(User, data.get("user_id"))
+
+    if (
+        user is None
+        or not user.is_active
+        or not user.email
+        or user.email != data.get("email")
+    ):
+        flash("That reset link is invalid or has expired.", "error")
+        return redirect(url_for("auth.forgot_password"))
+
+    if request.method == "POST":
+        password = request.form.get("password", "")
+        confirm = request.form.get("confirm_password", "")
+
+        if len(password) < 8:
+            flash("Password must be at least 8 characters.", "error")
+            return render_template("reset_password.html"), 400
+
+        if password != confirm:
+            flash("Passwords do not match.", "error")
+            return render_template("reset_password.html"), 400
+
+        user.set_password(password)
+        db.session.commit()
+
+        flash("Password reset successfully. Please log in.", "success")
+        return redirect(url_for("auth.login"))
+
+    return render_template("reset_password.html")
+
+
 @auth_bp.route("/users/create", methods=["GET", "POST"])
 @admin_required
 def create_user():
@@ -38,6 +124,11 @@ def create_user():
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
         role = request.form.get("role", "staff").strip().lower()
+        email = request.form.get("email", "").strip().lower() or None
+
+        if email and User.query.filter_by(email=email).first():
+            flash("That email is already in use.", "error")
+            return render_template("create_user.html"), 409
 
         if role not in ALLOWED_ROLES:
             flash("Choose a valid role.", "error")
@@ -63,7 +154,7 @@ def create_user():
             flash("That username is already taken.", "error")
             return render_template("create_user.html"), 409
 
-        user = User(username=username, role=role)
+        user = User(username=username, role=role, email=email)
         user.set_password(password)
         db.session.add(user)
 
@@ -109,6 +200,7 @@ def edit_user(user_id):
     if request.method == "POST":
         username = request.form.get("username", "").strip()
         role = request.form.get("role", "").strip().lower()
+        email = request.form.get("email", "").strip().lower() or None
 
         if not username or len(username) > 80:
             flash("Enter a username of 1–80 characters.", "error")
@@ -127,8 +219,18 @@ def edit_user(user_id):
             flash("That username is already taken.", "error")
             return render_template("edit_user.html", user=user), 409
 
+        duplicate_email = User.query.filter(
+            User.email == email,
+            User.id != user.id,
+        ).first() if email else None
+
+        if duplicate_email:
+            flash("That email is already in use.", "error")
+            return render_template("edit_user.html", user=user), 409
+
         user.username = username
         user.role = role
+        user.email = email
 
         try:
             db.session.commit()

@@ -1,5 +1,7 @@
 from app.data.extensions import db
 from app.data.models import User
+from unittest.mock import patch
+from itsdangerous import URLSafeTimedSerializer
 
 
 def add_user():
@@ -226,3 +228,88 @@ def test_deactivated_user_cannot_login(client, app):
         follow_redirects=True,
     )
     assert b"Invalid username or password" in response.data
+
+def test_forgot_password_sends_email(client, app):
+    with app.app_context():
+        user = User(username="reset-user", email="reset@example.com")
+        user.set_password("OldPassword123")
+        db.session.add(user)
+        db.session.commit()
+
+    with patch("app.presentation.routes.auth.send_reset_email") as send:
+        response = client.post(
+            "/forgot-password",
+            data={"email": "reset@example.com"},
+            follow_redirects=True,
+        )
+
+    assert response.status_code == 200
+    assert b"If an active account uses that email" in response.data
+    send.assert_called_once()
+    assert "reset-password/" in send.call_args.args[1]
+
+
+def test_forgot_password_unknown_email_same_message(client):
+    response = client.post(
+        "/forgot-password",
+        data={"email": "nobody@example.com"},
+        follow_redirects=True,
+    )
+
+    assert b"If an active account uses that email" in response.data
+
+
+def test_reset_password_changes_password(client, app):
+    with app.app_context():
+        user = User(username="reset-user", email="reset@example.com")
+        user.set_password("OldPassword123")
+        db.session.add(user)
+        db.session.commit()
+
+        token = URLSafeTimedSerializer(
+            app.config["SECRET_KEY"]
+        ).dumps(
+            {"user_id": user.id, "email": user.email},
+            salt="password-reset-v1",
+        )
+
+    response = client.post(
+        f"/reset-password/{token}",
+        data={
+            "password": "NewPassword123",
+            "confirm_password": "NewPassword123",
+        },
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+
+    with app.app_context():
+        user = User.query.filter_by(username="reset-user").one()
+        assert user.check_password("NewPassword123")
+        assert not user.check_password("OldPassword123")
+
+
+def test_reset_password_rejects_mismatch(client, app):
+    with app.app_context():
+        user = User(username="reset-user", email="reset@example.com")
+        user.set_password("OldPassword123")
+        db.session.add(user)
+        db.session.commit()
+
+        token = URLSafeTimedSerializer(
+            app.config["SECRET_KEY"]
+        ).dumps(
+            {"user_id": user.id, "email": user.email},
+            salt="password-reset-v1",
+        )
+
+    response = client.post(
+        f"/reset-password/{token}",
+        data={
+            "password": "NewPassword123",
+            "confirm_password": "Different123",
+        },
+    )
+
+    assert response.status_code == 400
