@@ -13,6 +13,9 @@ class Product(db.Model):
     category = db.Column(db.String(100), nullable=True, index=True)
     price = db.Column(db.Numeric(12, 2), nullable=False)
     stock = db.Column(db.Integer, nullable=False, default=0)
+    reorder_threshold = db.Column(
+        db.Integer, nullable=False, default=0, server_default="0"
+    )
 
     __table_args__ = (
         db.CheckConstraint(
@@ -22,5 +25,9 @@ class Product(db.Model):
         db.CheckConstraint(
             "stock >= 0",
             name="ck_product_stock_nonnegative",
+        ),
+        db.CheckConstraint(
+            "reorder_threshold >= 0",
+            name="ck_product_reorder_threshold_nonnegative",
         ),
     )

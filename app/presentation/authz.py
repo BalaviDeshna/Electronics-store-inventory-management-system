@@ -15,3 +15,15 @@ def admin_required(view):
         return view(*args, **kwargs)
 
     return wrapped_view
+
+
+def manager_required(view):
+    @wraps(view)
+    @login_required
+    def wrapped_view(*args, **kwargs):
+        if current_user.role not in {"manager", "admin"}:
+            abort(403)
+
+        return view(*args, **kwargs)
+
+    return wrapped_view

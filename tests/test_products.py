@@ -807,3 +807,487 @@ def test_edit_product_with_category_success(client):
     updated = db.session.get(Product, product_id)
     assert updated.name == "Studio Microphone"
     assert updated.category == "Studio Equipment"
+
+
+# --- US-22: Configure Reorder Thresholds per Product Tests ---
+
+
+def test_product_model_reorder_threshold_default_and_storage(client):
+    product = Product(name="Desk Fan", price=Decimal("29.99"), stock=10)
+    db.session.add(product)
+    db.session.commit()
+
+    saved = db.session.get(Product, product.id)
+    assert saved.reorder_threshold == 0
+
+    saved.reorder_threshold = 8
+    db.session.commit()
+
+    reloaded = db.session.get(Product, product.id)
+    assert reloaded.reorder_threshold == 8
+
+
+def test_product_model_check_constraint_rejects_negative_threshold(client):
+    from sqlalchemy.exc import IntegrityError
+    product = Product(name="Bad Product", price=Decimal("10.00"), stock=5, reorder_threshold=-2)
+    db.session.add(product)
+    try:
+        db.session.commit()
+        assert False, "Expected IntegrityError on negative reorder_threshold"
+    except IntegrityError:
+        db.session.rollback()
+
+
+def test_create_product_page_shows_reorder_threshold_field(client):
+    response = client.get("/products/create")
+    assert response.status_code == 200
+    assert b"Reorder threshold" in response.data
+    assert b'name="reorder_threshold"' in response.data
+
+
+def test_create_product_with_reorder_threshold_success(client):
+    response = client.post(
+        "/products/create",
+        data={
+            "name": "Mechanical Keyboard",
+            "price": "89.99",
+            "stock": "25",
+            "reorder_threshold": "12",
+        },
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert b"Product created successfully." in response.data
+
+    product = db.session.execute(
+        db.select(Product).filter_by(name="Mechanical Keyboard")
+    ).scalar_one()
+    assert product.reorder_threshold == 12
+    assert product.stock == 25
+
+
+def test_create_product_defaults_reorder_threshold_to_zero_when_omitted(client):
+    response = client.post(
+        "/products/create",
+        data={
+            "name": "USB-C Hub",
+            "price": "39.99",
+            "stock": "14",
+        },
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert b"Product created successfully." in response.data
+
+    product = db.session.execute(
+        db.select(Product).filter_by(name="USB-C Hub")
+    ).scalar_one()
+    assert product.reorder_threshold == 0
+
+
+def test_create_product_rejects_negative_reorder_threshold(client):
+    response = client.post(
+        "/products/create",
+        data={
+            "name": "Webcam",
+            "price": "59.99",
+            "stock": "10",
+            "reorder_threshold": "-3",
+        },
+    )
+    assert response.status_code == 200
+    assert b"Reorder threshold must be a non-negative whole number." in response.data
+    assert db.session.execute(db.select(Product).filter_by(name="Webcam")).scalar_one_or_none() is None
+
+
+def test_create_product_rejects_decimal_reorder_threshold(client):
+    response = client.post(
+        "/products/create",
+        data={
+            "name": "Webcam HD",
+            "price": "59.99",
+            "stock": "10",
+            "reorder_threshold": "4.5",
+        },
+    )
+    assert response.status_code == 200
+    assert b"Reorder threshold must be a non-negative whole number." in response.data
+    assert db.session.execute(db.select(Product).filter_by(name="Webcam HD")).scalar_one_or_none() is None
+
+
+def test_create_product_rejects_non_numeric_reorder_threshold(client):
+    response = client.post(
+        "/products/create",
+        data={
+            "name": "Webcam 4K",
+            "price": "99.99",
+            "stock": "10",
+            "reorder_threshold": "five",
+        },
+    )
+    assert response.status_code == 200
+    assert b"Reorder threshold must be a non-negative whole number." in response.data
+    assert db.session.execute(db.select(Product).filter_by(name="Webcam 4K")).scalar_one_or_none() is None
+
+
+def test_edit_product_page_shows_reorder_threshold_field(client):
+    product = Product(name="Monitor Stand", price=Decimal("45.00"), stock=8, reorder_threshold=6)
+    db.session.add(product)
+    db.session.commit()
+
+    response = client.get(f"/products/{product.id}/edit")
+    assert response.status_code == 200
+    assert b"Reorder threshold" in response.data
+    assert b'value="6"' in response.data
+
+
+def test_edit_product_updates_reorder_threshold_success(client):
+    product = Product(name="Desk Lamp", price=Decimal("35.00"), stock=15, reorder_threshold=4)
+    db.session.add(product)
+    db.session.commit()
+    product_id = product.id
+
+    response = client.post(
+        f"/products/{product_id}/edit",
+        data={
+            "name": "Desk Lamp LED",
+            "price": "35.00",
+            "stock": "15",
+            "reorder_threshold": "10",
+        },
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert b"Product updated successfully." in response.data
+
+    updated = db.session.get(Product, product_id)
+    assert updated.reorder_threshold == 10
+    assert updated.stock == 15
+
+
+def test_edit_product_rejects_negative_reorder_threshold(client):
+    product = Product(name="Desk Pad", price=Decimal("19.99"), stock=20, reorder_threshold=5)
+    db.session.add(product)
+    db.session.commit()
+    product_id = product.id
+
+    response = client.post(
+        f"/products/{product_id}/edit",
+        data={
+            "name": "Desk Pad",
+            "price": "19.99",
+            "stock": "20",
+            "reorder_threshold": "-2",
+        },
+    )
+    assert response.status_code == 200
+    assert b"Reorder threshold must be a non-negative whole number." in response.data
+
+    unchanged = db.session.get(Product, product_id)
+    assert unchanged.reorder_threshold == 5
+
+
+def test_edit_product_rejects_decimal_reorder_threshold(client):
+    product = Product(name="Desk Pad XL", price=Decimal("24.99"), stock=20, reorder_threshold=5)
+    db.session.add(product)
+    db.session.commit()
+    product_id = product.id
+
+    response = client.post(
+        f"/products/{product_id}/edit",
+        data={
+            "name": "Desk Pad XL",
+            "price": "24.99",
+            "stock": "20",
+            "reorder_threshold": "7.5",
+        },
+    )
+    assert response.status_code == 200
+    assert b"Reorder threshold must be a non-negative whole number." in response.data
+
+    unchanged = db.session.get(Product, product_id)
+    assert unchanged.reorder_threshold == 5
+
+
+def test_edit_product_rejects_invalid_string_reorder_threshold(client):
+    product = Product(name="Desk Pad XXL", price=Decimal("29.99"), stock=20, reorder_threshold=5)
+    db.session.add(product)
+    db.session.commit()
+    product_id = product.id
+
+    response = client.post(
+        f"/products/{product_id}/edit",
+        data={
+            "name": "Desk Pad XXL",
+            "price": "29.99",
+            "stock": "20",
+            "reorder_threshold": "not_a_number",
+        },
+    )
+    assert response.status_code == 200
+    assert b"Reorder threshold must be a non-negative whole number." in response.data
+
+    unchanged = db.session.get(Product, product_id)
+    assert unchanged.reorder_threshold == 5
+
+
+def test_edit_product_rejects_empty_reorder_threshold(client):
+    product = Product(name="Desk Pad Pro", price=Decimal("34.99"), stock=20, reorder_threshold=5)
+    db.session.add(product)
+    db.session.commit()
+    product_id = product.id
+
+    response = client.post(
+        f"/products/{product_id}/edit",
+        data={
+            "name": "Desk Pad Pro",
+            "price": "34.99",
+            "stock": "20",
+            "reorder_threshold": "  ",
+        },
+    )
+    assert response.status_code == 200
+    assert b"Reorder threshold is required." in response.data
+
+    unchanged = db.session.get(Product, product_id)
+    assert unchanged.reorder_threshold == 5
+
+
+def test_edit_product_omitted_threshold_preserves_existing_value(client):
+    product = Product(name="Desk Organizer", price=Decimal("22.00"), stock=10, reorder_threshold=7)
+    db.session.add(product)
+    db.session.commit()
+    product_id = product.id
+
+    response = client.post(
+        f"/products/{product_id}/edit",
+        data={
+            "name": "Desk Organizer Updated",
+            "price": "25.00",
+            "stock": "12",
+        },
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert b"Product updated successfully." in response.data
+
+    updated = db.session.get(Product, product_id)
+    assert updated.name == "Desk Organizer Updated"
+    assert updated.stock == 12
+    assert updated.reorder_threshold == 7
+
+
+def test_manager_can_update_threshold_via_dedicated_route(client, logged_in_manager):
+    product = Product(name="Smart Watch", price=Decimal("199.99"), stock=30, reorder_threshold=5)
+    db.session.add(product)
+    db.session.commit()
+    product_id = product.id
+
+    response = client.post(
+        f"/products/{product_id}/reorder-threshold",
+        data={"reorder_threshold": "15"},
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert b"Reorder threshold updated successfully." in response.data
+
+    updated = db.session.get(Product, product_id)
+    assert updated.reorder_threshold == 15
+    assert updated.stock == 30
+
+
+def test_admin_can_update_threshold_via_dedicated_route(client, logged_in_admin):
+    product = Product(name="Fitness Tracker", price=Decimal("49.99"), stock=40, reorder_threshold=5)
+    db.session.add(product)
+    db.session.commit()
+    product_id = product.id
+
+    response = client.post(
+        f"/products/{product_id}/reorder-threshold",
+        data={"reorder_threshold": "20"},
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert b"Reorder threshold updated successfully." in response.data
+
+    updated = db.session.get(Product, product_id)
+    assert updated.reorder_threshold == 20
+    assert updated.stock == 40
+
+
+def test_unauthenticated_cannot_update_threshold_via_dedicated_route(client):
+    product = Product(name="Power Bank", price=Decimal("29.99"), stock=50, reorder_threshold=10)
+    db.session.add(product)
+    db.session.commit()
+    product_id = product.id
+
+    response = client.post(
+        f"/products/{product_id}/reorder-threshold",
+        data={"reorder_threshold": "25"},
+    )
+    assert response.status_code == 302
+    assert "/login" in response.headers.get("Location", "")
+
+    unchanged = db.session.get(Product, product_id)
+    assert unchanged.reorder_threshold == 10
+
+
+def test_staff_cannot_update_threshold_via_dedicated_route(client, logged_in_staff):
+    product = Product(name="HDMI Cable", price=Decimal("12.99"), stock=60, reorder_threshold=10)
+    db.session.add(product)
+    db.session.commit()
+    product_id = product.id
+
+    response = client.post(
+        f"/products/{product_id}/reorder-threshold",
+        data={"reorder_threshold": "25"},
+    )
+    assert response.status_code == 403
+
+    unchanged = db.session.get(Product, product_id)
+    assert unchanged.reorder_threshold == 10
+
+
+def test_dedicated_route_rejects_negative_value(client, logged_in_manager):
+    product = Product(name="Ethernet Cable", price=Decimal("9.99"), stock=50, reorder_threshold=8)
+    db.session.add(product)
+    db.session.commit()
+    product_id = product.id
+
+    response = client.post(
+        f"/products/{product_id}/reorder-threshold",
+        data={"reorder_threshold": "-4"},
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert b"Reorder threshold must be a non-negative whole number." in response.data
+
+    unchanged = db.session.get(Product, product_id)
+    assert unchanged.reorder_threshold == 8
+
+
+def test_dedicated_route_rejects_empty_value(client, logged_in_manager):
+    product = Product(name="VGA Cable", price=Decimal("7.99"), stock=20, reorder_threshold=5)
+    db.session.add(product)
+    db.session.commit()
+    product_id = product.id
+
+    response = client.post(
+        f"/products/{product_id}/reorder-threshold",
+        data={"reorder_threshold": "   "},
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert b"Reorder threshold is required." in response.data
+
+    unchanged = db.session.get(Product, product_id)
+    assert unchanged.reorder_threshold == 5
+
+
+def test_dedicated_route_404_for_nonexistent_product(client, logged_in_manager):
+    response = client.post(
+        "/products/999999/reorder-threshold",
+        data={"reorder_threshold": "10"},
+    )
+    assert response.status_code == 404
+
+
+def test_staff_cannot_change_threshold_via_edit_product(client, logged_in_staff):
+    product = Product(name="DisplayPort Cable", price=Decimal("15.99"), stock=30, reorder_threshold=6)
+    db.session.add(product)
+    db.session.commit()
+    product_id = product.id
+
+    response = client.post(
+        f"/products/{product_id}/edit",
+        data={
+            "name": "DisplayPort Cable 1.4",
+            "price": "15.99",
+            "stock": "30",
+            "reorder_threshold": "12",
+        },
+    )
+    assert response.status_code == 403
+
+    unchanged = db.session.get(Product, product_id)
+    assert unchanged.reorder_threshold == 6
+
+
+def test_staff_can_edit_product_keeping_threshold_same(client, logged_in_staff):
+    product = Product(name="Audio Cable", price=Decimal("8.99"), stock=25, reorder_threshold=5)
+    db.session.add(product)
+    db.session.commit()
+    product_id = product.id
+
+    response = client.post(
+        f"/products/{product_id}/edit",
+        data={
+            "name": "Audio Cable 3.5mm",
+            "price": "9.99",
+            "stock": "25",
+            "reorder_threshold": "5",
+        },
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert b"Product updated successfully." in response.data
+
+    updated = db.session.get(Product, product_id)
+    assert updated.name == "Audio Cable 3.5mm"
+    assert updated.reorder_threshold == 5
+
+
+def test_staff_cannot_set_nonzero_threshold_on_create(client, logged_in_staff):
+    response = client.post(
+        "/products/create",
+        data={
+            "name": "USB Cable",
+            "price": "5.99",
+            "stock": "50",
+            "reorder_threshold": "10",
+        },
+    )
+    assert response.status_code == 403
+    assert db.session.execute(db.select(Product).filter_by(name="USB Cable")).scalar_one_or_none() is None
+
+
+def test_reorder_threshold_displayed_in_inventory_table(client):
+    product1 = Product(name="Tablet", price=Decimal("299.99"), stock=15, reorder_threshold=5)
+    product2 = Product(name="E-Reader", price=Decimal("119.99"), stock=8, reorder_threshold=2)
+    db.session.add_all([product1, product2])
+    db.session.commit()
+
+    response = client.get("/")
+    assert response.status_code == 200
+    assert b"Threshold" in response.data
+    assert b"<td>5</td>" in response.data
+    assert b"<td>2</td>" in response.data
+
+
+def test_threshold_separate_from_stock_updates(client, logged_in_manager):
+    product = Product(name="Smart Lightbulb", price=Decimal("14.99"), stock=50, reorder_threshold=10)
+    db.session.add(product)
+    db.session.commit()
+    product_id = product.id
+
+    # Updating threshold does not touch stock
+    response = client.post(
+        f"/products/{product_id}/reorder-threshold",
+        data={"reorder_threshold": "15"},
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    updated = db.session.get(Product, product_id)
+    assert updated.reorder_threshold == 15
+    assert updated.stock == 50
+
+    # Restocking updates stock, leaves threshold unchanged
+    response = client.post(
+        f"/products/{product_id}/restock",
+        data={"quantity": "20"},
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    reloaded = db.session.get(Product, product_id)
+    assert reloaded.stock == 70
+    assert reloaded.reorder_threshold == 15

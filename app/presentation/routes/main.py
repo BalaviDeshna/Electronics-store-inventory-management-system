@@ -12,6 +12,7 @@ from flask import (
     request,
     url_for,
 )
+from flask_login import current_user
 
 from app.business.sales import SaleValidationError, create_sale
 from app.business.stock import (
@@ -21,9 +22,33 @@ from app.business.stock import (
 )
 from app.data.extensions import db
 from app.data.models import Product, Sale, SaleItem
+from app.presentation.authz import manager_required
 
 
 main_bp = Blueprint("main", __name__)
+
+
+def parse_reorder_threshold(raw_val, default=0, required=False):
+    if raw_val is None:
+        if required:
+            raise ValueError("Reorder threshold is required.")
+        return default
+    if isinstance(raw_val, bool):
+        raise ValueError("Reorder threshold must be a non-negative whole number.")
+    s = str(raw_val).strip()
+    if not s:
+        if required:
+            raise ValueError("Reorder threshold is required.")
+        return default
+    if "." in s or "e" in s.lower() or "E" in s:
+        raise ValueError("Reorder threshold must be a non-negative whole number.")
+    try:
+        val = int(s)
+        if val < 0:
+            raise ValueError
+    except (ValueError, TypeError):
+        raise ValueError("Reorder threshold must be a non-negative whole number.")
+    return val
 
 
 def normalize_stock_status(val):
@@ -141,6 +166,7 @@ def create_product():
         raw_category = request.form.get("category", "").strip()
         raw_price = request.form.get("price", "").strip()
         raw_stock = request.form.get("stock", "").strip()
+        raw_threshold = request.form.get("reorder_threshold")
 
         if not name:
             flash("Product name is required.", "error")
@@ -185,9 +211,21 @@ def create_product():
             flash("Stock must be a non-negative whole number.", "error")
             return render_template("create_product.html")
 
+        try:
+            threshold = parse_reorder_threshold(raw_threshold, default=0, required=False)
+        except ValueError as exc:
+            flash(str(exc), "error")
+            return render_template("create_product.html")
+
+        if current_user.is_authenticated and current_user.role not in {"manager", "admin"}:
+            if threshold != 0:
+                abort(403)
+
         kwargs = {"name": name, "sku": sku, "price": price, "stock": stock}
         if hasattr(Product, "category"):
             kwargs["category"] = category
+        if hasattr(Product, "reorder_threshold"):
+            kwargs["reorder_threshold"] = threshold
         product = Product(**kwargs)
         db.session.add(product)
         try:
@@ -220,6 +258,7 @@ def edit_product(product_id):
         raw_category = request.form.get("category", "").strip()
         raw_price = request.form.get("price", "").strip()
         raw_stock = request.form.get("stock", "").strip()
+        raw_threshold = request.form.get("reorder_threshold")
 
         if not name:
             flash("Product name is required.", "error")
@@ -264,12 +303,30 @@ def edit_product(product_id):
             flash("Stock must be a non-negative whole number.", "error")
             return render_template("edit_product.html", product=product)
 
+        threshold = None
+        if raw_threshold is not None:
+            if not str(raw_threshold).strip():
+                flash("Reorder threshold is required.", "error")
+                return render_template("edit_product.html", product=product)
+            try:
+                threshold = parse_reorder_threshold(raw_threshold, required=True)
+            except ValueError as exc:
+                flash(str(exc), "error")
+                return render_template("edit_product.html", product=product)
+
+            if current_user.is_authenticated and current_user.role not in {"manager", "admin"}:
+                current_threshold = getattr(product, "reorder_threshold", 0)
+                if threshold != current_threshold:
+                    abort(403)
+
         product.name = name
         product.sku = sku
         if hasattr(product, "category"):
             product.category = category
         product.price = price
         product.stock = stock
+        if threshold is not None and hasattr(product, "reorder_threshold"):
+            product.reorder_threshold = threshold
         try:
             db.session.commit()
         except IntegrityError:
@@ -286,6 +343,41 @@ def edit_product(product_id):
         return redirect(url_for("main.edit_product", product_id=product.id))
 
     return render_template("edit_product.html", product=product)
+
+
+@main_bp.route("/products/<int:product_id>/reorder-threshold", methods=["POST"])
+@manager_required
+def update_reorder_threshold(product_id):
+    product = db.session.get(Product, product_id)
+    if product is None:
+        abort(404, description="Product not found.")
+
+    raw_threshold = request.form.get("reorder_threshold")
+    if raw_threshold is None or not str(raw_threshold).strip():
+        flash("Reorder threshold is required.", "error")
+        return redirect(url_for("main.edit_product", product_id=product.id))
+
+    try:
+        val = parse_reorder_threshold(raw_threshold, required=True)
+    except ValueError as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("main.edit_product", product_id=product.id))
+
+    initial_stock = product.stock
+    if hasattr(product, "reorder_threshold"):
+        product.reorder_threshold = val
+
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        current_app.logger.exception("Unable to update reorder threshold")
+        flash("The reorder threshold could not be updated. Please try again.", "error")
+        return redirect(url_for("main.edit_product", product_id=product.id))
+
+    assert product.stock == initial_stock
+    flash("Reorder threshold updated successfully.", "success")
+    return redirect(url_for("main.edit_product", product_id=product.id))
 
 
 @main_bp.route("/products/<int:product_id>/update", methods=["GET", "POST"])

@@ -43,6 +43,25 @@ def logged_in_admin(app, client):
 
 
 @pytest.fixture()
+def logged_in_manager(app, client):
+    from app.data.models import User
+
+    user = User(username="test-manager", role="manager")
+    user.set_password("ManagerPass123")
+    db.session.add(user)
+    db.session.commit()
+
+    client.post(
+        "/login",
+        data={
+            "username": "test-manager",
+            "password": "ManagerPass123",
+        },
+    )
+    return user
+
+
+@pytest.fixture()
 def logged_in_staff(app, client):
     from app.data.models import User
 
