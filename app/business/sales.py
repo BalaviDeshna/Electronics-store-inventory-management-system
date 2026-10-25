@@ -11,6 +11,7 @@ from app.data.models.sale import Sale, SaleItem
 
 
 CENT = Decimal("0.01")
+TAX_RATE = Decimal("0.05")
 
 
 class SaleValidationError(StockUpdateError):
@@ -28,6 +29,15 @@ def money(value):
         raise SaleValidationError("Monetary amount must be finite.")
 
     return amount.quantize(CENT, rounding=ROUND_HALF_UP)
+
+
+
+def calculate_totals(subtotal):
+    """Calculate subtotal, 5% tax, and final total."""
+    subtotal = money(subtotal)
+    tax_amount = money(subtotal * TAX_RATE)
+    final_total = money(subtotal + tax_amount)
+    return subtotal, tax_amount, final_total
 
 
 def create_sale(items, product_model):
@@ -127,7 +137,8 @@ def create_sale(items, product_model):
             product.stock = int(product.stock) - quantity
             total += line_total
 
-        sale.total_amount = money(total)
+        _, _, final_total = calculate_totals(total)
+        sale.total_amount = final_total
         db.session.add(sale)
         db.session.commit()
         return sale

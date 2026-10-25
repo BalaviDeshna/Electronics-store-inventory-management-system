@@ -50,7 +50,7 @@ def test_successful_sale_calculates_total_and_deducts_stock(app):
             Product,
         )
 
-        assert sale.total_amount == Decimal("51.00")
+        assert sale.total_amount == Decimal("53.55")
         assert len(sale.items) == 1
         assert sale.items[0].line_total == Decimal("51.00")
         assert db.session.get(Product, product.id).stock == 8
@@ -226,7 +226,7 @@ def test_sale_exact_stock_succeeds(app):
             Product,
         )
 
-        assert sale.total_amount == Decimal("149.95")
+        assert sale.total_amount == Decimal("157.45")
         assert len(sale.items) == 1
         assert db.session.get(Product, product.id).stock == 0
         assert Sale.query.count() == 1
@@ -400,12 +400,12 @@ def test_successful_multi_product_sale_records_items_totals_and_stock(app, clien
     assert response.status_code == 200
     assert b"Keyboard" in response.data
     assert b"Mouse" in response.data
-    assert b"95.00" in response.data
+    assert b"99.75" in response.data
 
     with app.app_context():
         sale = Sale.query.order_by(Sale.id.desc()).first()
         assert sale is not None
-        assert sale.total_amount == Decimal("95.00")
+        assert sale.total_amount == Decimal("99.75")
         assert len(sale.items) == 2
 
         items = {item.product_id: item for item in sale.items}
