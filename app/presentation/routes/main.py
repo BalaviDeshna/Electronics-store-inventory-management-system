@@ -1,3 +1,4 @@
+from decimal import Decimal
 from decimal import Decimal, InvalidOperation
 
 from sqlalchemy import func, or_
@@ -14,7 +15,15 @@ from flask import (
 )
 from flask_login import current_user
 
-from app.business.sales import SaleValidationError, create_sale
+
+from app.business.sales import (
+    SaleValidationError,
+    calculate_totals,
+    create_sale,
+)
+
+
+
 from app.business.stock import (
     StockUpdateError,
     process_return,
@@ -151,12 +160,25 @@ def create_sale_route():
 
 
 @main_bp.route("/sales/<int:sale_id>/invoice")
+@main_bp.route("/sales/<int:sale_id>/invoice")
 def invoice(sale_id):
     sale = db.session.get(Sale, sale_id)
     if sale is None:
         abort(404)
-    return render_template("invoice.html", sale=sale)
 
+    subtotal = sum(
+        (Decimal(str(item.line_total)) for item in sale.items),
+        Decimal("0.00"),
+    )
+    subtotal, tax_amount, final_total = calculate_totals(subtotal)
+
+    return render_template(
+        "invoice.html",
+        sale=sale,
+        subtotal=subtotal,
+        tax_amount=tax_amount,
+        final_total=final_total,
+    )
 
 @main_bp.route("/products/create", methods=["GET", "POST"])
 def create_product():
