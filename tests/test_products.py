@@ -1498,3 +1498,101 @@ def test_product_supplier_displayed_in_inventory_and_edit_form(client, logged_in
     assert resp_edit.status_code == 200
     assert b"Visible Supplier Corp" in resp_edit.data
     assert f'value="{supplier.id}" selected'.encode() in resp_edit.data
+
+
+# --- US-23: Low-Stock Alerts Tests ---
+
+
+def test_product_model_below_reorder_threshold_boundary(client):
+    p_below = Product(name="Below", price=Decimal("10.00"), stock=3, reorder_threshold=5)
+    assert p_below.is_below_reorder_threshold is True
+    assert p_below.is_low_stock is True
+
+    p_exact = Product(name="Exact", price=Decimal("10.00"), stock=5, reorder_threshold=5)
+    assert p_exact.is_below_reorder_threshold is False
+    assert p_exact.is_low_stock is False
+
+    p_above = Product(name="Above", price=Decimal("10.00"), stock=8, reorder_threshold=5)
+    assert p_above.is_below_reorder_threshold is False
+    assert p_above.is_low_stock is False
+
+    p_zero = Product(name="ZeroThreshold", price=Decimal("10.00"), stock=0, reorder_threshold=0)
+    assert p_zero.is_below_reorder_threshold is False
+    assert p_zero.is_low_stock is False
+
+
+def test_low_stock_alert_displayed_when_stock_below_threshold(client):
+    product = Product(name="Gaming Mousepad", price=Decimal("15.00"), stock=2, reorder_threshold=5)
+    db.session.add(product)
+    db.session.commit()
+
+    response = client.get("/")
+    assert response.status_code == 200
+    assert b"Low-Stock Alert" in response.data
+    assert b"Gaming Mousepad" in response.data
+    assert b"Low Stock Alert" in response.data
+
+
+def test_no_alert_when_stock_at_or_above_threshold(client):
+    p_exact = Product(name="USB Adapter", price=Decimal("8.00"), stock=10, reorder_threshold=10)
+    p_above = Product(name="Ethernet Switch", price=Decimal("45.00"), stock=15, reorder_threshold=10)
+    db.session.add_all([p_exact, p_above])
+    db.session.commit()
+
+    response = client.get("/")
+    assert response.status_code == 200
+    assert b"Low-Stock Alert:" not in response.data
+    assert b"low-stock-alert" not in response.data
+
+
+def test_no_alert_when_reorder_threshold_is_zero_or_unconfigured(client):
+    product = Product(name="Bulk Screws", price=Decimal("1.99"), stock=0, reorder_threshold=0)
+    db.session.add(product)
+    db.session.commit()
+
+    response = client.get("/")
+    assert response.status_code == 200
+    assert b"Low-Stock Alert:" not in response.data
+    assert b"low-stock-alert" not in response.data
+
+
+def test_manager_receives_low_stock_alert_on_dashboard(client, logged_in_manager):
+    product = Product(name="Graphics Card", sku="GPU-4070", price=Decimal("599.99"), stock=1, reorder_threshold=4)
+    db.session.add(product)
+    db.session.commit()
+
+    response = client.get("/")
+    assert response.status_code == 200
+    assert b"Low-Stock Alert" in response.data
+    assert b"Graphics Card" in response.data
+    assert b"GPU-4070" in response.data
+    assert b"Restock / Edit" in response.data
+
+
+def test_sale_dropping_stock_below_threshold_triggers_alert(client):
+    from app.business.sales import create_sale
+
+    product = Product(name="Wireless Earphones", price=Decimal("49.99"), stock=10, reorder_threshold=8)
+    db.session.add(product)
+    db.session.commit()
+    product_id = product.id
+
+    res_before = client.get("/")
+    assert b"Low-Stock Alert:" not in res_before.data
+
+    create_sale([{"product_id": product_id, "quantity": 3}], Product)
+
+    res_after = client.get("/")
+    assert b"Low-Stock Alert" in res_after.data
+    assert b"Wireless Earphones" in res_after.data
+
+
+def test_edit_product_page_shows_alert_when_stock_below_threshold(client):
+    product = Product(name="Thermal Paste", price=Decimal("9.99"), stock=2, reorder_threshold=10)
+    db.session.add(product)
+    db.session.commit()
+
+    response = client.get(f"/products/{product.id}/edit")
+    assert response.status_code == 200
+    assert b"Low-Stock Alert" in response.data
+    assert b"Restocking is required." in response.data

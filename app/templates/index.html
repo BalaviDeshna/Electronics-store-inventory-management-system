@@ -13,6 +13,24 @@
     {% endfor %}
 {% endwith %}
 
+{% if low_stock_alerts %}
+<div class="alert alert-warning low-stock-alert" role="alert" style="background-color: #fff3cd; color: #856404; border: 1px solid #ffeeba; padding: 12px 16px; border-radius: 6px; margin: 16px 0;">
+    <strong>Low-Stock Alert:</strong> The following product(s) have fallen below their reorder threshold:
+    <ul style="margin: 8px 0 0 20px; padding: 0;">
+        {% for alert_product in low_stock_alerts %}
+        <li>
+            <strong>{{ alert_product.name }}</strong>
+            {% if alert_product.sku %}(SKU: {{ alert_product.sku }}){% endif %} —
+            Current stock: <strong>{{ alert_product.stock }}</strong>,
+            Reorder threshold: <strong>{{ alert_product.reorder_threshold }}</strong>
+            {% if alert_product.supplier %} — Supplier: {{ alert_product.supplier.name }}{% endif %}
+            — <a href="{{ url_for('main.edit_product', product_id=alert_product.id) }}">Restock / Edit</a>
+        </li>
+        {% endfor %}
+    </ul>
+</div>
+{% endif %}
+
 {% set available_products = all_products if all_products is defined else products %}
 {% if available_products %}
 <form action="{{ url_for('main.create_sale_route') }}" method="post">
@@ -102,12 +120,18 @@ function addSaleItem() {
     </thead>
     <tbody>
         {% for product in products %}
-        <tr>
+        {% set is_low = (product.is_below_reorder_threshold if product.is_below_reorder_threshold is defined else (product.reorder_threshold is defined and product.reorder_threshold > 0 and product.stock < product.reorder_threshold)) %}
+        <tr {% if is_low %}class="low-stock-row"{% endif %}>
             <td>{{ product.sku or "—" }}</td>
             <td>{{ product.name }}</td>
             <td>{{ product.category or "—" }}</td>
             <td>{{ "%.2f"|format(product.price) }}</td>
-            <td>{{ product.stock }}</td>
+            <td>
+                {{ product.stock }}
+                {% if is_low %}
+                <span class="low-stock-badge alert-indicator" style="color: #dc3545; font-weight: bold; margin-left: 4px;">(Low Stock Alert)</span>
+                {% endif %}
+            </td>
             <td>{{ product.reorder_threshold if product.reorder_threshold is defined else 0 }}</td>
             <td>{{ product.supplier.name if product.supplier else "—" }}</td>
             <td>

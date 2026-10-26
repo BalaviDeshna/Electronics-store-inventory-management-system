@@ -1,7 +1,7 @@
 from decimal import Decimal
 from decimal import Decimal, InvalidOperation
 
-from sqlalchemy import func, or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.exc import IntegrityError
 from flask import (
     Blueprint,
@@ -111,10 +111,39 @@ def home():
         elif stock_status == "out_of_stock":
             query_obj = query_obj.filter(Product.stock == 0)
         elif stock_status == "low_stock":
-            query_obj = query_obj.filter(Product.stock > 0, Product.stock <= 5)
+            if hasattr(Product, "reorder_threshold"):
+                query_obj = query_obj.filter(
+                    or_(
+                        and_(
+                            Product.reorder_threshold > 0,
+                            Product.stock < Product.reorder_threshold,
+                        ),
+                        and_(
+                            or_(
+                                Product.reorder_threshold == 0,
+                                Product.reorder_threshold.is_(None),
+                            ),
+                            Product.stock > 0,
+                            Product.stock <= 5,
+                        ),
+                    )
+                )
+            else:
+                query_obj = query_obj.filter(Product.stock > 0, Product.stock <= 5)
 
     products = query_obj.order_by(Product.name).all()
     all_products = Product.query.order_by(Product.name).all()
+
+    low_stock_alerts = [
+        p
+        for p in all_products
+        if getattr(p, "is_below_reorder_threshold", False)
+        or (
+            getattr(p, "reorder_threshold", 0) is not None
+            and getattr(p, "reorder_threshold", 0) > 0
+            and getattr(p, "stock", 0) < getattr(p, "reorder_threshold", 0)
+        )
+    ]
 
     categories = []
     if hasattr(Product, "category"):
@@ -134,6 +163,7 @@ def home():
         "index.html",
         products=products,
         all_products=all_products,
+        low_stock_alerts=low_stock_alerts,
         q=q,
         query=q,
         categories=categories,
