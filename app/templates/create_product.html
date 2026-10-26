@@ -34,6 +34,14 @@
     <input type="number" id="reorder_threshold" name="reorder_threshold"
            min="0" step="1" value="0">
 
+    <label for="supplier_id">Supplier</label>
+    <select id="supplier_id" name="supplier_id">
+        <option value="">Select a supplier (optional)</option>
+        {% for s in suppliers if suppliers is defined %}
+        <option value="{{ s.id }}">{{ s.name }}</option>
+        {% endfor %}
+    </select>
+
     <button type="submit">Create Product</button>
 </form>
 {% endblock %}
