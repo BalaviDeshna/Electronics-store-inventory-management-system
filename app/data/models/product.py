@@ -25,6 +25,22 @@ class Product(db.Model):
         backref=db.backref("products", lazy=True),
     )
 
+    @property
+    def is_below_reorder_threshold(self) -> bool:
+        """Return True if stock is strictly below a configured positive reorder threshold."""
+        threshold = getattr(self, "reorder_threshold", 0)
+        if threshold is None or threshold <= 0:
+            return False
+        stock = getattr(self, "stock", 0)
+        if stock is None:
+            return False
+        return stock < threshold
+
+    @property
+    def is_low_stock(self) -> bool:
+        """Alias for is_below_reorder_threshold."""
+        return self.is_below_reorder_threshold
+
     __table_args__ = (
         db.CheckConstraint(
             "price >= 0",

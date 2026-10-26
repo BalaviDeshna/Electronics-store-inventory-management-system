@@ -11,6 +11,13 @@
     {% endfor %}
 {% endwith %}
 
+{% set is_low = (product.is_below_reorder_threshold if product.is_below_reorder_threshold is defined else (product.reorder_threshold is defined and product.reorder_threshold > 0 and product.stock < product.reorder_threshold)) %}
+{% if is_low %}
+<div class="alert alert-warning low-stock-alert" role="alert" style="background-color: #fff3cd; color: #856404; border: 1px solid #ffeeba; padding: 12px 16px; border-radius: 6px; margin: 16px 0;">
+    <strong>Low-Stock Alert:</strong> Current stock ({{ product.stock }}) is below the reorder threshold ({{ product.reorder_threshold }}). Restocking is required.
+</div>
+{% endif %}
+
 <form method="POST" action="{{ url_for('main.edit_product', product_id=product.id) }}">
     <label for="name">Product name</label>
     <input type="text" id="name" name="name" value="{{ product.name }}" maxlength="200" required>

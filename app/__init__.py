@@ -41,6 +41,14 @@ def create_app(test_config=None):
             inspector = inspect(db.engine)
             if "products" in inspector.get_table_names():
                 cols = [c["name"] for c in inspector.get_columns("products")]
+                if "reorder_threshold" not in cols:
+                    with db.engine.connect() as conn:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE products ADD COLUMN reorder_threshold INTEGER NOT NULL DEFAULT 0"
+                            )
+                        )
+                        conn.commit()
                 if "supplier_id" not in cols:
                     with db.engine.connect() as conn:
                         conn.execute(
