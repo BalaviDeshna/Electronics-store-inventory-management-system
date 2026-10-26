@@ -1291,3 +1291,210 @@ def test_threshold_separate_from_stock_updates(client, logged_in_manager):
     reloaded = db.session.get(Product, product_id)
     assert reloaded.stock == 70
     assert reloaded.reorder_threshold == 15
+
+
+# --- US-18: Link Products to Suppliers Tests ---
+
+
+def test_product_supplier_relationship_model(app):
+    from app.data.models import Supplier
+    with app.app_context():
+        supplier = Supplier(name="Apex Chipsets", contact_info="apex@chips.com")
+        db.session.add(supplier)
+        db.session.commit()
+
+        product = Product(
+            name="Graphic Processor",
+            price=Decimal("499.99"),
+            stock=12,
+            supplier_id=supplier.id,
+        )
+        db.session.add(product)
+        db.session.commit()
+
+        loaded_product = db.session.get(Product, product.id)
+        assert loaded_product.supplier_id == supplier.id
+        assert loaded_product.supplier.name == "Apex Chipsets"
+        assert product in supplier.products
+
+
+def test_create_product_with_supplier_assignment(client, logged_in_admin):
+    from app.data.models import Supplier
+    supplier = Supplier(name="SoundWave Audio", contact_info="sound@wave.com")
+    db.session.add(supplier)
+    db.session.commit()
+
+    response = client.post(
+        "/products/create",
+        data={
+            "name": "Studio Speakers",
+            "price": "199.99",
+            "stock": "10",
+            "supplier_id": str(supplier.id),
+        },
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert b"Product created successfully." in response.data
+
+    created = Product.query.filter_by(name="Studio Speakers").first()
+    assert created is not None
+    assert created.supplier_id == supplier.id
+    assert created.supplier.name == "SoundWave Audio"
+
+
+def test_edit_product_change_supplier(client, logged_in_admin):
+    from app.data.models import Supplier
+    s1 = Supplier(name="Supplier Alpha")
+    s2 = Supplier(name="Supplier Beta")
+    db.session.add_all([s1, s2])
+    db.session.commit()
+
+    product = Product(name="Smart Bulb", price=Decimal("19.99"), stock=30, supplier_id=s1.id)
+    db.session.add(product)
+    db.session.commit()
+    product_id = product.id
+
+    response = client.post(
+        f"/products/{product_id}/edit",
+        data={
+            "name": "Smart Bulb v2",
+            "price": "21.99",
+            "stock": "30",
+            "supplier_id": str(s2.id),
+        },
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert b"Product updated successfully." in response.data
+
+    updated = db.session.get(Product, product_id)
+    assert updated.supplier_id == s2.id
+    assert updated.supplier.name == "Supplier Beta"
+
+
+def test_edit_product_unassign_supplier(client, logged_in_admin):
+    from app.data.models import Supplier
+    supplier = Supplier(name="Temporary Supplier")
+    db.session.add(supplier)
+    db.session.commit()
+
+    product = Product(name="Generic Cable", price=Decimal("5.99"), stock=100, supplier_id=supplier.id)
+    db.session.add(product)
+    db.session.commit()
+    product_id = product.id
+
+    response = client.post(
+        f"/products/{product_id}/edit",
+        data={
+            "name": "Generic Cable",
+            "price": "5.99",
+            "stock": "100",
+            "supplier_id": "",
+        },
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert b"Product updated successfully." in response.data
+
+    updated = db.session.get(Product, product_id)
+    assert updated.supplier_id is None
+    assert updated.supplier is None
+
+
+def test_product_supplier_validation_rejects_nonexistent_supplier(client, logged_in_admin):
+    # On creation
+    resp_create = client.post(
+        "/products/create",
+        data={
+            "name": "Invalid Supplier Product",
+            "price": "50.00",
+            "stock": "10",
+            "supplier_id": "999999",
+        },
+    )
+    assert resp_create.status_code == 200
+    assert b"Selected supplier does not exist." in resp_create.data
+    assert Product.query.filter_by(name="Invalid Supplier Product").first() is None
+
+    # On edit
+    product = Product(name="Valid Existing Product", price=Decimal("50.00"), stock=10)
+    db.session.add(product)
+    db.session.commit()
+    product_id = product.id
+
+    resp_edit = client.post(
+        f"/products/{product_id}/edit",
+        data={
+            "name": "Valid Existing Product",
+            "price": "50.00",
+            "stock": "10",
+            "supplier_id": "999999",
+        },
+    )
+    assert resp_edit.status_code == 200
+    assert b"Selected supplier does not exist." in resp_edit.data
+    assert db.session.get(Product, product_id).supplier_id is None
+
+
+def test_staff_cannot_assign_or_change_supplier(client, logged_in_staff):
+    from app.data.models import Supplier
+    supplier = Supplier(name="Protected Supplier")
+    db.session.add(supplier)
+    db.session.commit()
+
+    # Staff cannot set supplier during create
+    resp_create = client.post(
+        "/products/create",
+        data={
+            "name": "Staff Attempt Product",
+            "price": "20.00",
+            "stock": "5",
+            "supplier_id": str(supplier.id),
+        },
+    )
+    assert resp_create.status_code == 403
+
+    # Staff cannot change supplier during edit
+    product = Product(name="Staff Edit Product", price=Decimal("20.00"), stock=5, supplier_id=None)
+    db.session.add(product)
+    db.session.commit()
+
+    resp_edit = client.post(
+        f"/products/{product.id}/edit",
+        data={
+            "name": "Staff Edit Product",
+            "price": "20.00",
+            "stock": "5",
+            "supplier_id": str(supplier.id),
+        },
+    )
+    assert resp_edit.status_code == 403
+    assert db.session.get(Product, product.id).supplier_id is None
+
+
+def test_product_supplier_displayed_in_inventory_and_edit_form(client, logged_in_admin):
+    from app.data.models import Supplier
+    supplier = Supplier(name="Visible Supplier Corp")
+    db.session.add(supplier)
+    db.session.commit()
+
+    product = Product(
+        name="Visible Product",
+        price=Decimal("150.00"),
+        stock=20,
+        supplier_id=supplier.id,
+    )
+    db.session.add(product)
+    db.session.commit()
+
+    # Inventory listing displays supplier
+    resp_list = client.get("/")
+    assert resp_list.status_code == 200
+    assert b"Visible Supplier Corp" in resp_list.data
+
+    # Edit form has supplier selected
+    resp_edit = client.get(f"/products/{product.id}/edit")
+    assert resp_edit.status_code == 200
+    assert b"Visible Supplier Corp" in resp_edit.data
+    assert f'value="{supplier.id}" selected'.encode() in resp_edit.data

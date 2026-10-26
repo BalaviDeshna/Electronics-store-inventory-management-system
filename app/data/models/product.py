@@ -16,6 +16,14 @@ class Product(db.Model):
     reorder_threshold = db.Column(
         db.Integer, nullable=False, default=0, server_default="0"
     )
+    supplier_id = db.Column(
+        db.Integer, db.ForeignKey("suppliers.id"), nullable=True, index=True
+    )
+
+    supplier = db.relationship(
+        "Supplier",
+        backref=db.backref("products", lazy=True),
+    )
 
     __table_args__ = (
         db.CheckConstraint(

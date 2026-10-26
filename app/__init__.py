@@ -36,4 +36,20 @@ def create_app(test_config=None):
         except Exception:
             pass
 
+        try:
+            from sqlalchemy import inspect, text
+            inspector = inspect(db.engine)
+            if "products" in inspector.get_table_names():
+                cols = [c["name"] for c in inspector.get_columns("products")]
+                if "supplier_id" not in cols:
+                    with db.engine.connect() as conn:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE products ADD COLUMN supplier_id INTEGER REFERENCES suppliers(id)"
+                            )
+                        )
+                        conn.commit()
+        except Exception:
+            pass
+
     return app

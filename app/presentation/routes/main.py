@@ -30,7 +30,7 @@ from app.business.stock import (
     restock_product,
 )
 from app.data.extensions import db
-from app.data.models import Product, Sale, SaleItem
+from app.data.models import Product, Sale, SaleItem, Supplier
 from app.presentation.authz import manager_required
 
 
@@ -58,6 +58,21 @@ def parse_reorder_threshold(raw_val, default=0, required=False):
     except (ValueError, TypeError):
         raise ValueError("Reorder threshold must be a non-negative whole number.")
     return val
+
+
+def parse_supplier_id(raw_val):
+    if raw_val is None:
+        return None
+    s = str(raw_val).strip()
+    if not s or s.lower() in {"none", "null", "0"}:
+        return None
+    try:
+        val = int(s)
+        if val <= 0:
+            raise ValueError
+        return val
+    except (ValueError, TypeError):
+        raise ValueError("Please select a valid supplier.")
 
 
 def normalize_stock_status(val):
@@ -182,6 +197,7 @@ def invoice(sale_id):
 
 @main_bp.route("/products/create", methods=["GET", "POST"])
 def create_product():
+    suppliers = Supplier.query.order_by(Supplier.name).all() if hasattr(Supplier, "query") else []
     if request.method == "POST":
         name = request.form.get("name", "").strip()
         raw_sku = request.form.get("sku", "").strip()
@@ -189,32 +205,33 @@ def create_product():
         raw_price = request.form.get("price", "").strip()
         raw_stock = request.form.get("stock", "").strip()
         raw_threshold = request.form.get("reorder_threshold")
+        raw_supplier_id = request.form.get("supplier_id")
 
         if not name:
             flash("Product name is required.", "error")
-            return render_template("create_product.html")
+            return render_template("create_product.html", suppliers=suppliers)
 
         if len(name) > 200:
             flash("Product name must be 200 characters or fewer.", "error")
-            return render_template("create_product.html")
+            return render_template("create_product.html", suppliers=suppliers)
 
         sku = raw_sku if raw_sku else None
         if sku:
             if len(sku) > 100:
                 flash("SKU must be 100 characters or fewer.", "error")
-                return render_template("create_product.html")
+                return render_template("create_product.html", suppliers=suppliers)
 
             existing_sku = db.session.execute(
                 db.select(Product).filter_by(sku=sku)
             ).scalar_one_or_none()
             if existing_sku:
                 flash("A product with this SKU already exists.", "error")
-                return render_template("create_product.html")
+                return render_template("create_product.html", suppliers=suppliers)
 
         category = raw_category if raw_category else None
         if category and len(category) > 100:
             flash("Category must be 100 characters or fewer.", "error")
-            return render_template("create_product.html")
+            return render_template("create_product.html", suppliers=suppliers)
 
         try:
             price = Decimal(raw_price)
@@ -223,7 +240,7 @@ def create_product():
             price = price.quantize(Decimal("0.01"))
         except (InvalidOperation, ValueError):
             flash("Enter a valid, non-negative price.", "error")
-            return render_template("create_product.html")
+            return render_template("create_product.html", suppliers=suppliers)
 
         try:
             stock = int(raw_stock)
@@ -231,23 +248,43 @@ def create_product():
                 raise ValueError
         except (ValueError, TypeError):
             flash("Stock must be a non-negative whole number.", "error")
-            return render_template("create_product.html")
+            return render_template("create_product.html", suppliers=suppliers)
 
         try:
             threshold = parse_reorder_threshold(raw_threshold, default=0, required=False)
         except ValueError as exc:
             flash(str(exc), "error")
-            return render_template("create_product.html")
+            return render_template("create_product.html", suppliers=suppliers)
 
         if current_user.is_authenticated and current_user.role not in {"manager", "admin"}:
             if threshold != 0:
                 abort(403)
+
+        supplier_id = None
+        if raw_supplier_id is not None:
+            try:
+                supplier_id = parse_supplier_id(raw_supplier_id)
+            except ValueError as exc:
+                flash(str(exc), "error")
+                return render_template("create_product.html", suppliers=suppliers)
+
+            if supplier_id is not None:
+                supplier = db.session.get(Supplier, supplier_id)
+                if supplier is None:
+                    flash("Selected supplier does not exist.", "error")
+                    return render_template("create_product.html", suppliers=suppliers)
+
+            if current_user.is_authenticated and current_user.role != "admin":
+                if supplier_id is not None:
+                    abort(403)
 
         kwargs = {"name": name, "sku": sku, "price": price, "stock": stock}
         if hasattr(Product, "category"):
             kwargs["category"] = category
         if hasattr(Product, "reorder_threshold"):
             kwargs["reorder_threshold"] = threshold
+        if hasattr(Product, "supplier_id"):
+            kwargs["supplier_id"] = supplier_id
         product = Product(**kwargs)
         db.session.add(product)
         try:
@@ -255,17 +292,17 @@ def create_product():
         except IntegrityError:
             db.session.rollback()
             flash("A product with this SKU already exists.", "error")
-            return render_template("create_product.html")
+            return render_template("create_product.html", suppliers=suppliers)
         except Exception:
             db.session.rollback()
             current_app.logger.exception("Unable to create product")
             flash("The product could not be created. Please try again.", "error")
-            return render_template("create_product.html")
+            return render_template("create_product.html", suppliers=suppliers)
 
         flash("Product created successfully.", "success")
         return redirect(url_for("main.create_product"))
 
-    return render_template("create_product.html")
+    return render_template("create_product.html", suppliers=suppliers)
 
 
 @main_bp.route("/products/<int:product_id>/edit", methods=["GET", "POST"])
@@ -274,6 +311,8 @@ def edit_product(product_id):
     if product is None:
         abort(404, description="Product not found.")
 
+    suppliers = Supplier.query.order_by(Supplier.name).all() if hasattr(Supplier, "query") else []
+
     if request.method == "POST":
         name = request.form.get("name", "").strip()
         raw_sku = request.form.get("sku", "").strip()
@@ -281,32 +320,33 @@ def edit_product(product_id):
         raw_price = request.form.get("price", "").strip()
         raw_stock = request.form.get("stock", "").strip()
         raw_threshold = request.form.get("reorder_threshold")
+        raw_supplier_id = request.form.get("supplier_id")
 
         if not name:
             flash("Product name is required.", "error")
-            return render_template("edit_product.html", product=product)
+            return render_template("edit_product.html", product=product, suppliers=suppliers)
 
         if len(name) > 200:
             flash("Product name must be 200 characters or fewer.", "error")
-            return render_template("edit_product.html", product=product)
+            return render_template("edit_product.html", product=product, suppliers=suppliers)
 
         sku = raw_sku if raw_sku else None
         if sku:
             if len(sku) > 100:
                 flash("SKU must be 100 characters or fewer.", "error")
-                return render_template("edit_product.html", product=product)
+                return render_template("edit_product.html", product=product, suppliers=suppliers)
 
             existing_sku = db.session.execute(
                 db.select(Product).filter_by(sku=sku)
             ).scalar_one_or_none()
             if existing_sku and existing_sku.id != product.id:
                 flash("A product with this SKU already exists.", "error")
-                return render_template("edit_product.html", product=product)
+                return render_template("edit_product.html", product=product, suppliers=suppliers)
 
         category = raw_category if raw_category else None
         if category and len(category) > 100:
             flash("Category must be 100 characters or fewer.", "error")
-            return render_template("edit_product.html", product=product)
+            return render_template("edit_product.html", product=product, suppliers=suppliers)
 
         try:
             price = Decimal(raw_price)
@@ -315,7 +355,7 @@ def edit_product(product_id):
             price = price.quantize(Decimal("0.01"))
         except (InvalidOperation, ValueError):
             flash("Enter a valid, non-negative price.", "error")
-            return render_template("edit_product.html", product=product)
+            return render_template("edit_product.html", product=product, suppliers=suppliers)
 
         try:
             stock = int(raw_stock)
@@ -323,23 +363,45 @@ def edit_product(product_id):
                 raise ValueError
         except (ValueError, TypeError):
             flash("Stock must be a non-negative whole number.", "error")
-            return render_template("edit_product.html", product=product)
+            return render_template("edit_product.html", product=product, suppliers=suppliers)
 
         threshold = None
         if raw_threshold is not None:
             if not str(raw_threshold).strip():
                 flash("Reorder threshold is required.", "error")
-                return render_template("edit_product.html", product=product)
+                return render_template("edit_product.html", product=product, suppliers=suppliers)
             try:
                 threshold = parse_reorder_threshold(raw_threshold, required=True)
             except ValueError as exc:
                 flash(str(exc), "error")
-                return render_template("edit_product.html", product=product)
+                return render_template("edit_product.html", product=product, suppliers=suppliers)
 
             if current_user.is_authenticated and current_user.role not in {"manager", "admin"}:
                 current_threshold = getattr(product, "reorder_threshold", 0)
                 if threshold != current_threshold:
                     abort(403)
+
+        update_supplier = False
+        supplier_id = None
+        if raw_supplier_id is not None:
+            try:
+                supplier_id = parse_supplier_id(raw_supplier_id)
+            except ValueError as exc:
+                flash(str(exc), "error")
+                return render_template("edit_product.html", product=product, suppliers=suppliers)
+
+            if supplier_id is not None:
+                supplier = db.session.get(Supplier, supplier_id)
+                if supplier is None:
+                    flash("Selected supplier does not exist.", "error")
+                    return render_template("edit_product.html", product=product, suppliers=suppliers)
+
+            if current_user.is_authenticated and current_user.role != "admin":
+                current_supplier_id = getattr(product, "supplier_id", None)
+                if supplier_id != current_supplier_id:
+                    abort(403)
+
+            update_supplier = True
 
         product.name = name
         product.sku = sku
@@ -349,22 +411,25 @@ def edit_product(product_id):
         product.stock = stock
         if threshold is not None and hasattr(product, "reorder_threshold"):
             product.reorder_threshold = threshold
+        if update_supplier and hasattr(product, "supplier_id"):
+            product.supplier_id = supplier_id
+
         try:
             db.session.commit()
         except IntegrityError:
             db.session.rollback()
             flash("A product with this SKU already exists.", "error")
-            return render_template("edit_product.html", product=product)
+            return render_template("edit_product.html", product=product, suppliers=suppliers)
         except Exception:
             db.session.rollback()
             current_app.logger.exception("Unable to update product")
             flash("The product could not be updated. Please try again.", "error")
-            return render_template("edit_product.html", product=product)
+            return render_template("edit_product.html", product=product, suppliers=suppliers)
 
         flash("Product updated successfully.", "success")
         return redirect(url_for("main.edit_product", product_id=product.id))
 
-    return render_template("edit_product.html", product=product)
+    return render_template("edit_product.html", product=product, suppliers=suppliers)
 
 
 @main_bp.route("/products/<int:product_id>/reorder-threshold", methods=["POST"])
