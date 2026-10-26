@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Edit Supplier | Electronics Store{% endblock %}
+{% block content %}
+<h2>Edit Supplier</h2>
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+        <p class="{{ category }}" role="alert">{{ message }}</p>
+    {% endfor %}
+{% endwith %}
+
+<form method="POST" action="{{ url_for('supplier.edit_supplier', supplier_id=supplier.id) }}">
+    <label for="name">Supplier name</label>
+    <input type="text" id="name" name="name" value="{{ supplier.name }}" maxlength="200" required>
+
+    <label for="contact_info">Contact information</label>
+    <input type="text" id="contact_info" name="contact_info" value="{{ supplier.contact_info or supplier.contact_information or '' }}" maxlength="255">
+
+    <label for="address">Address</label>
+    <textarea id="address" name="address" rows="4" maxlength="500">{{ supplier.address or '' }}</textarea>
+
+    <button type="submit">Update Supplier</button>
+</form>
+
+<p>
+    <a href="{{ url_for('supplier.list_suppliers') }}">Back to Suppliers</a>
+</p>
+{% endblock %}

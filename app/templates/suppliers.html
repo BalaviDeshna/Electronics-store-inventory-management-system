@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Supplier Management | Electronics Store{% endblock %}
+{% block content %}
+<h2>Suppliers</h2>
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+        <p class="{{ category }}" role="alert">{{ message }}</p>
+    {% endfor %}
+{% endwith %}
+
+<p>
+    <a href="{{ url_for('supplier.create_supplier') }}">Add Supplier</a>
+</p>
+
+{% if suppliers %}
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Contact Information</th>
+            <th>Address</th>
+            <th>Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for supplier in suppliers %}
+        <tr>
+            <td>{{ supplier.name }}</td>
+            <td>{{ supplier.contact_info or supplier.contact_information or '' }}</td>
+            <td>{{ supplier.address or '' }}</td>
+            <td>
+                <a href="{{ url_for('supplier.edit_supplier', supplier_id=supplier.id) }}">Edit</a>
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p>No suppliers found. Click "Add Supplier" to create one.</p>
+{% endif %}
+{% endblock %}
