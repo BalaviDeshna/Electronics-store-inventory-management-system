@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+
+{% block title %}Stock Report | Electronics Store{% endblock %}
+
+{% block content %}
+<h2>Stock Report</h2>
+
+<p>
+    Select a start date and end date to view stock movement.
+    Current stock reflects the latest inventory level.
+</p>
+
+{% if error %}
+    <p class="error" role="alert">{{ error }}</p>
+{% endif %}
+
+<form method="GET" action="{{ url_for('main.stock_report') }}">
+    <label for="start_date">Start date</label>
+    <input
+        type="date"
+        id="start_date"
+        name="start_date"
+        value="{{ start_date }}"
+        required
+    >
+
+    <label for="end_date">End date</label>
+    <input
+        type="date"
+        id="end_date"
+        name="end_date"
+        value="{{ end_date }}"
+        required
+    >
+
+    <button type="submit">Generate Report</button>
+</form>
+
+{% if report_rows %}
+    <table>
+        <thead>
+            <tr>
+                <th>Product</th>
+                <th>SKU</th>
+                <th>Units Sold</th>
+                <th>Units Restocked</th>
+                <th>Units Returned</th>
+                <th>Net Movement</th>
+                <th>Current Stock</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in report_rows %}
+                <tr>
+                    <td>{{ row.product.name }}</td>
+                    <td>{{ row.product.sku or "—" }}</td>
+                    <td>{{ row.sold }}</td>
+                    <td>{{ row.restocked }}</td>
+                    <td>{{ row.returned }}</td>
+                    <td>{{ row.net_change }}</td>
+                    <td>{{ row.product.stock }}</td>
+                </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+{% elif start_date and end_date and not error %}
+    <p>No products found for this report.</p>
+{% endif %}
+
+{% endblock %}

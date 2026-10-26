@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta
 from decimal import Decimal
 from decimal import Decimal, InvalidOperation
 
@@ -30,7 +31,14 @@ from app.business.stock import (
     restock_product,
 )
 from app.data.extensions import db
-from app.data.models import Product, Sale, SaleItem, Supplier
+from app.data.models import (
+    Product,
+    ProductRestock,
+    ProductReturn,
+    Sale,
+    SaleItem,
+    Supplier,
+)
 from app.presentation.authz import manager_required
 
 
@@ -571,3 +579,114 @@ def process_return_route():
         current_app.logger.exception("Unable to process return")
         flash("The return could not be processed. Please try again.", "error")
     return redirect(url_for("main.home"))
+
+
+
+@main_bp.route("/reports/stock", methods=["GET"])
+@manager_required
+def stock_report():
+    raw_start = request.args.get("start_date", "").strip()
+    raw_end = request.args.get("end_date", "").strip()
+
+    report_rows = []
+    error = None
+
+    if raw_start or raw_end:
+        if not raw_start or not raw_end:
+            error = "Select both a start date and an end date."
+        else:
+            try:
+                start = datetime.strptime(raw_start, "%Y-%m-%d").date()
+                end = datetime.strptime(raw_end, "%Y-%m-%d").date()
+
+                if (
+                    start.isoformat() != raw_start
+                    or end.isoformat() != raw_end
+                ):
+                    raise ValueError
+
+                if start > end:
+                    error = (
+                        "Enter valid dates and ensure the start date "
+                        "is not after the end date."
+                    )
+            except ValueError:
+                error = (
+                    "Enter valid dates and ensure the start date "
+                    "is not after the end date."
+                )
+
+            if error is None:
+                start_dt = datetime.combine(start, datetime.min.time())
+                end_exclusive = datetime.combine(
+                    end + timedelta(days=1),
+                    datetime.min.time(),
+                )
+
+                def totals_by_product(query):
+                    return {
+                        product_id: int(quantity or 0)
+                        for product_id, quantity in query.all()
+                    }
+
+                sold = totals_by_product(
+                    db.session.query(
+                        SaleItem.product_id,
+                        func.sum(SaleItem.quantity),
+                    )
+                    .join(Sale, Sale.id == SaleItem.sale_id)
+                    .filter(
+                        Sale.created_at >= start_dt,
+                        Sale.created_at < end_exclusive,
+                    )
+                    .group_by(SaleItem.product_id)
+                )
+
+                restocked = totals_by_product(
+                    db.session.query(
+                        ProductRestock.product_id,
+                        func.sum(ProductRestock.quantity),
+                    )
+                    .filter(
+                        ProductRestock.created_at >= start_dt,
+                        ProductRestock.created_at < end_exclusive,
+                    )
+                    .group_by(ProductRestock.product_id)
+                )
+
+                returned = totals_by_product(
+                    db.session.query(
+                        ProductReturn.product_id,
+                        func.sum(ProductReturn.quantity),
+                    )
+                    .filter(
+                        ProductReturn.created_at >= start_dt,
+                        ProductReturn.created_at < end_exclusive,
+                    )
+                    .group_by(ProductReturn.product_id)
+                )
+
+                for product in Product.query.order_by(Product.name).all():
+                    sold_qty = sold.get(product.id, 0)
+                    restock_qty = restocked.get(product.id, 0)
+                    return_qty = returned.get(product.id, 0)
+
+                    report_rows.append(
+                        {
+                            "product": product,
+                            "sold": sold_qty,
+                            "restocked": restock_qty,
+                            "returned": return_qty,
+                            "net_change": (
+                                restock_qty + return_qty - sold_qty
+                            ),
+                        }
+                    )
+
+    return render_template(
+        "stock_report.html",
+        start_date=raw_start,
+        end_date=raw_end,
+        report_rows=report_rows,
+        error=error,
+    )
