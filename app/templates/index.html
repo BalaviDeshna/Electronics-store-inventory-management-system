@@ -25,6 +25,12 @@
             Reorder threshold: <strong>{{ alert_product.reorder_threshold }}</strong>
             {% if alert_product.supplier %} — Supplier: {{ alert_product.supplier.name }}{% endif %}
             — <a href="{{ url_for('main.edit_product', product_id=alert_product.id) }}">Restock / Edit</a>
+            {% if current_user.is_authenticated and current_user.role in ['manager', 'admin'] %}
+            —
+            <form action="{{ url_for('purchase_order.create_po_from_low_stock', product_id=alert_product.id) }}" method="post" style="display:inline;" onsubmit="return confirm('Create purchase order for {{ alert_product.name }}?');">
+                <button type="submit">Create Purchase Order</button>
+            </form>
+            {% endif %}
         </li>
         {% endfor %}
     </ul>
@@ -136,6 +142,11 @@ function addSaleItem() {
             <td>{{ product.supplier.name if product.supplier else "—" }}</td>
             <td>
                 <a href="{{ url_for('main.edit_product', product_id=product.id) }}">Edit</a>
+                {% if is_low and current_user.is_authenticated and current_user.role in ['manager', 'admin'] %}
+                <form action="{{ url_for('purchase_order.create_po_from_low_stock', product_id=product.id) }}" method="post" style="display:inline;" onsubmit="return confirm('Create purchase order for {{ product.name }}?');">
+                    <button type="submit">Create PO</button>
+                </form>
+                {% endif %}
                 <form action="{{ url_for('main.delete_product', product_id=product.id) }}" method="post" style="display:inline;" onsubmit="return confirm('Are you sure you want to delete this product?');">
                     <button type="submit">Delete</button>
                 </form>

@@ -4,6 +4,7 @@ import pytest
 from app.business.purchase_order import (
     PurchaseOrderValidationError,
     create_purchase_order,
+    create_purchase_order_from_low_stock,
     receive_purchase_order,
     record_partial_delivery,
 )
@@ -1193,3 +1194,473 @@ def test_purchase_order_view_renders_pending_quantities_and_delivery_form(
     assert b"Partially Received" in res_after.data
     assert b"4" in res_after.data  # Received qty
     assert b"6" in res_after.data  # Pending qty
+
+
+# ==========================================
+# 6. US-24: Create Purchase Orders Directly from Low-Stock Alerts Tests
+# ==========================================
+
+
+def test_create_po_from_low_stock_business_logic_success(app):
+    with app.app_context():
+        supplier = Supplier(name="Prime Supply Co", contact_info="orders@prime.com")
+        product = Product(
+            name="Mechanical Keyboard",
+            price=Decimal("79.99"),
+            stock=2,
+            reorder_threshold=10,
+        )
+        db.session.add_all([supplier, product])
+        db.session.commit()
+
+        product.supplier_id = supplier.id
+        db.session.commit()
+
+        assert product.is_low_stock is True
+        assert product.suggested_reorder_quantity == 8  # 10 - 2
+
+        po = create_purchase_order_from_low_stock(product.id)
+
+        assert po is not None
+        assert po.id is not None
+        assert po.supplier_id == supplier.id
+        assert po.status == "Pending"
+        assert len(po.items) == 1
+        assert po.items[0].product_id == product.id
+        assert po.items[0].quantity == 8
+        assert po.items[0].unit_price == Decimal("79.99")
+        assert po.items[0].received_quantity == 0
+
+        # CRITICAL: Stock must NOT have changed when initiating the PO!
+        reloaded = db.session.get(Product, product.id)
+        assert reloaded.stock == 2
+
+
+def test_create_po_from_low_stock_explicit_quantity_override(app):
+    with app.app_context():
+        supplier = Supplier(name="Fast Electro")
+        product = Product(
+            name="Gaming Headset",
+            price=Decimal("59.99"),
+            stock=1,
+            reorder_threshold=5,
+        )
+        db.session.add_all([supplier, product])
+        db.session.commit()
+
+        product.supplier_id = supplier.id
+        db.session.commit()
+
+        # Explicitly order 20 units rather than suggested 4
+        po = create_purchase_order_from_low_stock(product.id, quantity=20)
+
+        assert po.items[0].quantity == 20
+        assert db.session.get(Product, product.id).stock == 1
+
+
+def test_create_po_from_low_stock_suggested_quantity_when_zero_stock(app):
+    with app.app_context():
+        supplier = Supplier(name="Zero Stock Supplier")
+        product = Product(
+            name="USB Flash Drive",
+            price=Decimal("12.00"),
+            stock=0,
+            reorder_threshold=15,
+        )
+        db.session.add_all([supplier, product])
+        db.session.commit()
+
+        product.supplier_id = supplier.id
+        db.session.commit()
+
+        po = create_purchase_order_from_low_stock(product.id)
+        assert po.items[0].quantity == 15  # 15 - 0
+
+
+def test_create_po_from_low_stock_rejects_product_without_supplier(app):
+    with app.app_context():
+        product = Product(
+            name="Unassigned Drone",
+            price=Decimal("299.00"),
+            stock=1,
+            reorder_threshold=8,
+            supplier_id=None,
+        )
+        db.session.add(product)
+        db.session.commit()
+
+        with pytest.raises(
+            PurchaseOrderValidationError, match="no assigned supplier"
+        ):
+            create_purchase_order_from_low_stock(product.id)
+
+        # Confirm no PO was created
+        assert PurchaseOrder.query.count() == 0
+
+
+def test_create_po_from_low_stock_rejects_stale_alert_stock_at_or_above_threshold(
+    app,
+):
+    with app.app_context():
+        supplier = Supplier(name="Stale Supplier")
+        product = Product(
+            name="Laptop Charger",
+            price=Decimal("39.99"),
+            stock=10,
+            reorder_threshold=10,
+        )
+        db.session.add_all([supplier, product])
+        db.session.commit()
+
+        product.supplier_id = supplier.id
+        db.session.commit()
+
+        assert product.is_low_stock is False
+
+        with pytest.raises(
+            PurchaseOrderValidationError,
+            match="not currently below its reorder threshold",
+        ):
+            create_purchase_order_from_low_stock(product.id)
+
+        assert PurchaseOrder.query.count() == 0
+
+
+def test_create_po_from_low_stock_rejects_unconfigured_threshold_zero(app):
+    with app.app_context():
+        supplier = Supplier(name="Zero Threshold Supplier")
+        product = Product(
+            name="Loose Screws",
+            price=Decimal("0.50"),
+            stock=0,
+            reorder_threshold=0,
+        )
+        db.session.add_all([supplier, product])
+        db.session.commit()
+
+        product.supplier_id = supplier.id
+        db.session.commit()
+
+        with pytest.raises(
+            PurchaseOrderValidationError,
+            match="not currently below its reorder threshold",
+        ):
+            create_purchase_order_from_low_stock(product.id)
+
+        assert PurchaseOrder.query.count() == 0
+
+
+def test_create_po_from_low_stock_rejects_nonexistent_product(app):
+    with app.app_context():
+        with pytest.raises(
+            PurchaseOrderValidationError, match="does not exist"
+        ):
+            create_purchase_order_from_low_stock(999999)
+
+
+def test_create_po_from_low_stock_prevents_duplicate_pending_order(app):
+    with app.app_context():
+        supplier = Supplier(name="Dupe Low Stock Supplier")
+        product = Product(
+            name="HDMI Splitter",
+            price=Decimal("19.99"),
+            stock=2,
+            reorder_threshold=10,
+        )
+        db.session.add_all([supplier, product])
+        db.session.commit()
+
+        product.supplier_id = supplier.id
+        db.session.commit()
+
+        # First PO creation succeeds
+        po1 = create_purchase_order_from_low_stock(product.id)
+        assert po1.id is not None
+        assert PurchaseOrder.query.count() == 1
+
+        # Second creation attempt while po1 is Pending must be rejected to prevent duplicate ordering
+        with pytest.raises(
+            PurchaseOrderValidationError, match="already exists"
+        ):
+            create_purchase_order_from_low_stock(product.id)
+
+        assert PurchaseOrder.query.count() == 1
+
+        # When allow_duplicate=True, another order is allowed
+        po2 = create_purchase_order_from_low_stock(
+            product.id, allow_duplicate=True
+        )
+        assert po2.id is not None
+        assert PurchaseOrder.query.count() == 2
+
+
+def test_create_po_from_low_stock_database_failure_rolls_back(app, monkeypatch):
+    with app.app_context():
+        supplier = Supplier(name="Rollback PO Supplier")
+        product = Product(
+            name="Rollback Mouse",
+            price=Decimal("25.00"),
+            stock=1,
+            reorder_threshold=6,
+        )
+        db.session.add_all([supplier, product])
+        db.session.commit()
+
+        product.supplier_id = supplier.id
+        db.session.commit()
+
+        def mock_commit():
+            raise Exception("Simulated DB failure during PO creation commit")
+
+        monkeypatch.setattr(db.session, "commit", mock_commit)
+
+        with pytest.raises(Exception, match="Simulated DB failure"):
+            create_purchase_order_from_low_stock(product.id)
+
+        monkeypatch.undo()
+
+        # Verify no purchase order or item records were left behind
+        assert PurchaseOrder.query.count() == 0
+
+
+def test_create_po_from_low_stock_requires_authentication(client):
+    response = client.post("/purchase-orders/from-low-stock/1")
+    assert response.status_code == 302
+    assert "/login" in response.headers.get("Location", "")
+
+
+def test_staff_cannot_create_po_from_low_stock(client, logged_in_staff):
+    supplier = Supplier(name="Staff PO Supplier")
+    product = Product(
+        name="Staff PO Product",
+        price=Decimal("15.00"),
+        stock=2,
+        reorder_threshold=10,
+    )
+    db.session.add_all([supplier, product])
+    db.session.commit()
+
+    product.supplier_id = supplier.id
+    db.session.commit()
+
+    response = client.post(f"/purchase-orders/from-low-stock/{product.id}")
+    assert response.status_code == 403
+    assert PurchaseOrder.query.count() == 0
+
+
+def test_manager_creates_po_from_low_stock_via_http(client, logged_in_manager):
+    supplier = Supplier(name="Manager Low Stock Supplier")
+    product = Product(
+        name="Wireless Router",
+        price=Decimal("89.99"),
+        stock=3,
+        reorder_threshold=10,
+    )
+    db.session.add_all([supplier, product])
+    db.session.commit()
+
+    product.supplier_id = supplier.id
+    db.session.commit()
+
+    response = client.post(
+        f"/purchase-orders/from-low-stock/{product.id}",
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert b"created successfully" in response.data
+    assert b"Purchase Order:" in response.data
+
+    # Verify PO in database
+    po = PurchaseOrder.query.first()
+    assert po is not None
+    assert po.supplier_id == supplier.id
+    assert po.items[0].product_id == product.id
+    assert po.items[0].quantity == 7  # 10 - 3
+
+
+def test_admin_creates_po_from_low_stock_via_alternate_endpoint(
+    client, logged_in_admin
+):
+    supplier = Supplier(name="Admin Low Stock Supplier")
+    product = Product(
+        name="Ethernet Cable 50ft",
+        price=Decimal("14.99"),
+        stock=1,
+        reorder_threshold=8,
+    )
+    db.session.add_all([supplier, product])
+    db.session.commit()
+
+    product.supplier_id = supplier.id
+    db.session.commit()
+
+    response = client.post(
+        f"/products/{product.id}/create-purchase-order",
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert b"created successfully" in response.data
+    assert PurchaseOrder.query.count() == 1
+
+
+def test_create_po_from_low_stock_via_json_api(client, logged_in_manager):
+    supplier = Supplier(name="JSON PO Supplier")
+    product = Product(
+        name="Bluetooth Speaker",
+        price=Decimal("49.99"),
+        stock=2,
+        reorder_threshold=10,
+    )
+    db.session.add_all([supplier, product])
+    db.session.commit()
+
+    product.supplier_id = supplier.id
+    db.session.commit()
+
+    response = client.post(
+        f"/purchase-orders/from-low-stock/{product.id}",
+        json={"quantity": 12},
+    )
+    assert response.status_code == 201
+    data = response.get_json()
+    assert data["success"] is True
+    assert data["purchase_order"]["status"] == "Pending"
+    assert data["purchase_order"]["items"][0]["quantity"] == 12
+    assert "purchase_order_url" in data
+
+
+def test_create_po_from_low_stock_http_handles_no_supplier(
+    client, logged_in_manager
+):
+    product = Product(
+        name="Orphan Product",
+        price=Decimal("20.00"),
+        stock=1,
+        reorder_threshold=5,
+        supplier_id=None,
+    )
+    db.session.add(product)
+    db.session.commit()
+
+    response = client.post(
+        f"/purchase-orders/from-low-stock/{product.id}",
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert b"no assigned supplier" in response.data
+    assert PurchaseOrder.query.count() == 0
+
+
+def test_create_po_from_low_stock_http_handles_stale_alert(
+    client, logged_in_manager
+):
+    supplier = Supplier(name="Restocked Supplier")
+    product = Product(
+        name="Well Stocked Item",
+        price=Decimal("10.00"),
+        stock=20,
+        reorder_threshold=10,
+    )
+    db.session.add_all([supplier, product])
+    db.session.commit()
+
+    product.supplier_id = supplier.id
+    db.session.commit()
+
+    response = client.post(
+        f"/purchase-orders/from-low-stock/{product.id}",
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert b"not currently below its reorder threshold" in response.data
+    assert PurchaseOrder.query.count() == 0
+
+
+def test_create_po_from_low_stock_http_nonexistent_product_returns_404(
+    client, logged_in_manager
+):
+    response = client.post("/purchase-orders/from-low-stock/999999")
+    assert response.status_code == 404
+
+
+def test_created_po_from_low_stock_appears_in_views_and_can_be_received(
+    client, logged_in_manager
+):
+    supplier = Supplier(name="Full Lifecycle Supplier")
+    product = Product(
+        name="Lifecycle Product",
+        price=Decimal("35.00"),
+        stock=2,
+        reorder_threshold=10,
+    )
+    db.session.add_all([supplier, product])
+    db.session.commit()
+
+    product.supplier_id = supplier.id
+    db.session.commit()
+
+    # 1. Create PO from low-stock alert
+    res_create = client.post(
+        f"/purchase-orders/from-low-stock/{product.id}",
+        follow_redirects=True,
+    )
+    assert res_create.status_code == 200
+    po = PurchaseOrder.query.first()
+    assert po is not None
+
+    # 2. Check it appears in PO list view
+    res_list = client.get("/purchase-orders")
+    assert res_list.status_code == 200
+    assert po.order_number.encode() in res_list.data
+
+    # 3. Check it appears in PO detail view
+    res_detail = client.get(f"/purchase-orders/{po.id}")
+    assert res_detail.status_code == 200
+    assert b"Lifecycle Product" in res_detail.data
+    assert b"8" in res_detail.data  # quantity
+
+    # 4. Receive the purchase order
+    res_receive = client.post(
+        f"/purchase-orders/{po.id}/receive", follow_redirects=True
+    )
+    assert res_receive.status_code == 200
+    assert b"Received" in res_receive.data
+
+    # 5. Product stock must be updated to 10 (2 + 8)
+    reloaded = db.session.get(Product, product.id)
+    assert reloaded.stock == 10
+
+    # 6. Low stock alert should no longer be active on the dashboard!
+    res_dash = client.get("/")
+    assert res_dash.status_code == 200
+    assert b"Low-Stock Alert:" not in res_dash.data
+
+
+def test_low_stock_alert_renders_create_purchase_order_action_for_manager(
+    client, logged_in_manager
+):
+    supplier = Supplier(name="Action Supplier")
+    product = Product(
+        name="Alerted Gadget",
+        sku="GADGET-1",
+        price=Decimal("29.99"),
+        stock=1,
+        reorder_threshold=5,
+    )
+    db.session.add_all([supplier, product])
+    db.session.commit()
+
+    product.supplier_id = supplier.id
+    db.session.commit()
+
+    # Check dashboard low-stock banner
+    res_dash = client.get("/")
+    assert res_dash.status_code == 200
+    assert b"Low-Stock Alert" in res_dash.data
+    assert b"Create Purchase Order" in res_dash.data
+    assert f"/purchase-orders/from-low-stock/{product.id}".encode() in res_dash.data
+
+    # Check edit product low-stock banner
+    res_edit = client.get(f"/products/{product.id}/edit")
+    assert res_edit.status_code == 200
+    assert b"Create Purchase Order" in res_edit.data

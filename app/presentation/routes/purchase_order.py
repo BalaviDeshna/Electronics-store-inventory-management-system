@@ -13,6 +13,7 @@ from flask import (
 from app.business.purchase_order import (
     PurchaseOrderValidationError,
     create_purchase_order,
+    create_purchase_order_from_low_stock,
     receive_purchase_order,
     record_partial_delivery,
 )
@@ -101,10 +102,28 @@ def create_purchase_order_view():
                 500,
             )
 
+    prefill_pid = request.args.get("product_id")
+    selected_product_id = None
+    selected_supplier_id = None
+    selected_quantity = None
+    if prefill_pid:
+        matching_p = next(
+            (p for p in products if str(p.id) == str(prefill_pid)), None
+        )
+        if matching_p:
+            selected_product_id = matching_p.id
+            selected_supplier_id = matching_p.supplier_id
+            selected_quantity = getattr(
+                matching_p, "suggested_reorder_quantity", None
+            )
+
     return render_template(
         "create_purchase_order.html",
         suppliers=suppliers,
         products=products,
+        selected_product_id=selected_product_id,
+        selected_supplier_id=selected_supplier_id,
+        selected_quantity=selected_quantity,
     )
 
 
@@ -317,3 +336,105 @@ def record_partial_delivery_view(po_id):
             return jsonify({"error": "Failed to record delivery."}), 500
         flash("An error occurred while recording the delivery.", "error")
         return redirect(url_for("purchase_order.view_purchase_order", po_id=po.id))
+
+
+@purchase_order_bp.route(
+    "/purchase-orders/from-low-stock/<int:product_id>",
+    methods=["GET", "POST"],
+    endpoint="create_po_from_low_stock",
+)
+@purchase_order_bp.route(
+    "/products/<int:product_id>/create-purchase-order",
+    methods=["GET", "POST"],
+    endpoint="create_po_from_product",
+)
+@manager_required
+def create_po_from_low_stock_view(product_id):
+    product = db.session.get(Product, product_id)
+    if product is None:
+        if request.is_json:
+            return jsonify({"error": "Product not found."}), 404
+        abort(404, description="Product not found.")
+
+    if request.method == "GET":
+        if request.is_json:
+            return (
+                jsonify(
+                    {
+                        "product_id": product.id,
+                        "product_name": product.name,
+                        "sku": product.sku,
+                        "supplier_id": product.supplier_id,
+                        "supplier_name": product.supplier.name
+                        if product.supplier
+                        else None,
+                        "stock": product.stock,
+                        "reorder_threshold": product.reorder_threshold,
+                        "is_low_stock": product.is_low_stock,
+                        "suggested_quantity": product.suggested_reorder_quantity,
+                        "unit_price": str(product.price)
+                        if product.price is not None
+                        else None,
+                    }
+                ),
+                200,
+            )
+        return redirect(
+            url_for("purchase_order.create_purchase_order", product_id=product.id)
+        )
+
+    # POST request: create the purchase order directly
+    raw_qty = None
+    raw_supplier_id = None
+    allow_duplicate = False
+
+    if request.is_json:
+        data = request.get_json(silent=True) or {}
+        raw_qty = data.get("quantity")
+        raw_supplier_id = data.get("supplier_id")
+        allow_duplicate = bool(data.get("allow_duplicate", False))
+    else:
+        raw_qty = request.form.get("quantity")
+        raw_supplier_id = request.form.get("supplier_id")
+        allow_duplicate = request.form.get("allow_duplicate") == "true"
+
+    try:
+        po = create_purchase_order_from_low_stock(
+            product_id=product_id,
+            quantity=raw_qty,
+            supplier_id=raw_supplier_id,
+            allow_duplicate=allow_duplicate,
+        )
+        flash(
+            f"Purchase order #{po.id} created successfully for {product.name}.",
+            "success",
+        )
+        if request.is_json:
+            return (
+                jsonify(
+                    {
+                        "success": True,
+                        "message": f"Purchase order #{po.id} created successfully.",
+                        "purchase_order": po.to_dict(),
+                        "purchase_order_url": url_for(
+                            "purchase_order.view_purchase_order", po_id=po.id
+                        ),
+                    }
+                ),
+                201,
+            )
+        return redirect(url_for("purchase_order.view_purchase_order", po_id=po.id))
+
+    except PurchaseOrderValidationError as exc:
+        if request.is_json:
+            return jsonify({"error": str(exc)}), 400
+        flash(str(exc), "error")
+        return redirect(request.referrer or url_for("main.home"))
+
+    except Exception:
+        db.session.rollback()
+        current_app.logger.exception("Unable to create purchase order from low stock")
+        if request.is_json:
+            return jsonify({"error": "Failed to create purchase order."}), 500
+        flash("An error occurred while creating the purchase order.", "error")
+        return redirect(request.referrer or url_for("main.home"))

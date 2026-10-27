@@ -41,6 +41,15 @@ class Product(db.Model):
         """Alias for is_below_reorder_threshold."""
         return self.is_below_reorder_threshold
 
+    @property
+    def suggested_reorder_quantity(self) -> int:
+        """Calculate suggested replenishment quantity to restore inventory to threshold."""
+        threshold = getattr(self, "reorder_threshold", 0) or 0
+        stock = getattr(self, "stock", 0) or 0
+        if threshold > stock:
+            return threshold - stock
+        return max(1, threshold)
+
     __table_args__ = (
         db.CheckConstraint(
             "price >= 0",
