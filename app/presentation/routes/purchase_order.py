@@ -13,6 +13,7 @@ from flask import (
 from app.business.purchase_order import (
     PurchaseOrderValidationError,
     create_purchase_order,
+    receive_purchase_order,
 )
 from app.data.extensions import db
 from app.data.models import Product, PurchaseOrder, Supplier
@@ -152,3 +153,55 @@ def view_purchase_order_view(po_id):
         "purchase_order.html",
         purchase_order=po,
     )
+
+
+@purchase_order_bp.route(
+    "/purchase-orders/<int:po_id>/receive",
+    methods=["POST"],
+    endpoint="receive_purchase_order",
+)
+@purchase_order_bp.route(
+    "/purchase-orders/<int:po_id>/mark-received",
+    methods=["POST"],
+    endpoint="mark_received",
+)
+@manager_required
+def receive_purchase_order_view(po_id):
+    po = db.session.get(PurchaseOrder, po_id)
+    if po is None:
+        if request.is_json:
+            return jsonify({"error": "Purchase order not found."}), 404
+        abort(404, description="Purchase order not found.")
+
+    try:
+        updated_po = receive_purchase_order(po_id)
+        flash(
+            f"Purchase order #{updated_po.id} marked as received. Stock updated successfully.",
+            "success",
+        )
+        if request.is_json:
+            return (
+                jsonify(
+                    {
+                        "success": True,
+                        "message": "Purchase order received and stock updated.",
+                        "purchase_order": updated_po.to_dict(),
+                    }
+                ),
+                200,
+            )
+        return redirect(url_for("purchase_order.view_purchase_order", po_id=po.id))
+
+    except PurchaseOrderValidationError as exc:
+        if request.is_json:
+            return jsonify({"error": str(exc)}), 400
+        flash(str(exc), "error")
+        return redirect(url_for("purchase_order.view_purchase_order", po_id=po.id))
+
+    except Exception:
+        db.session.rollback()
+        current_app.logger.exception("Unable to receive purchase order")
+        if request.is_json:
+            return jsonify({"error": "Failed to receive purchase order."}), 500
+        flash("An error occurred while receiving the purchase order.", "error")
+        return redirect(url_for("purchase_order.view_purchase_order", po_id=po.id))

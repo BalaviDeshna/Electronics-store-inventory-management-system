@@ -47,6 +47,12 @@ class PurchaseOrder(db.Model):
     def total_quantity(self):
         return sum(item.quantity for item in self.items)
 
+    def mark_as_received(self):
+        """Update purchase order status to Received and set received quantities."""
+        self.status = "Received"
+        for item in self.items:
+            item.received_quantity = item.quantity
+
     def to_dict(self):
         return {
             "id": self.id,

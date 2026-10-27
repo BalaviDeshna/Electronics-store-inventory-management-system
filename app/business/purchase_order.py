@@ -1,7 +1,13 @@
 from decimal import Decimal
 
 from app.data.extensions import db
-from app.data.models import Product, PurchaseOrder, PurchaseOrderItem, Supplier
+from app.data.models import (
+    Product,
+    ProductRestock,
+    PurchaseOrder,
+    PurchaseOrderItem,
+    Supplier,
+)
 
 
 class PurchaseOrderValidationError(ValueError):
@@ -145,3 +151,72 @@ def create_purchase_order(
             raise
 
     return po
+
+
+def receive_purchase_order(
+    po_id,
+    po_model=PurchaseOrder,
+    product_model=Product,
+    commit=True,
+):
+    """
+    Mark a pending purchase order as received and increase product stock atomically.
+
+    Raises:
+        PurchaseOrderValidationError: if PO is missing, already received, or has invalid data.
+    """
+    if po_id is None or isinstance(po_id, bool):
+        raise PurchaseOrderValidationError("Purchase order ID is required.")
+    try:
+        valid_id = int(str(po_id).strip())
+        if valid_id <= 0:
+            raise ValueError
+    except (ValueError, TypeError):
+        raise PurchaseOrderValidationError("Invalid purchase order ID.")
+
+    po = db.session.get(po_model, valid_id)
+    if po is None:
+        raise PurchaseOrderValidationError(f"Purchase order {valid_id} does not exist.")
+
+    if po.status == "Received":
+        raise PurchaseOrderValidationError("Purchase order has already been received.")
+
+    if po.status != "Pending":
+        raise PurchaseOrderValidationError(
+            f"Cannot receive purchase order with status '{po.status}'."
+        )
+
+    if not po.items:
+        raise PurchaseOrderValidationError(
+            "Purchase order contains no items to receive."
+        )
+
+    try:
+        # Increase stock for each item in the purchase order
+        for item in po.items:
+            product = db.session.get(product_model, item.product_id)
+            if product is None:
+                raise PurchaseOrderValidationError(
+                    f"Product {item.product_id} does not exist."
+                )
+
+            product.stock = int(product.stock) + int(item.quantity)
+            item.received_quantity = int(item.quantity)
+
+            # Record restock movement for audit history and reports
+            restock_record = ProductRestock(
+                product_id=product.id,
+                quantity=item.quantity,
+                reference=f"PO #{po.id}",
+            )
+            db.session.add(restock_record)
+
+        po.status = "Received"
+
+        if commit:
+            db.session.commit()
+
+        return po
+    except Exception:
+        db.session.rollback()
+        raise
