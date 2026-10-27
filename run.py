@@ -3,7 +3,13 @@ import socket
 from decimal import Decimal
 from app import create_app
 from app.data.extensions import db
-from app.data.models import Product, Supplier, User
+from app.data.models import (
+    Product,
+    PurchaseOrder,
+    PurchaseOrderItem,
+    Supplier,
+    User,
+)
 
 app = create_app()
 

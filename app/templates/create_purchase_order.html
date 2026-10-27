@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}Create Purchase Order | Electronics Store{% endblock %}
+{% block content %}
+<h2>Create Purchase Order</h2>
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+        <p class="{{ category }}" role="alert">{{ message }}</p>
+    {% endfor %}
+{% endwith %}
+
+<form method="POST" action="{{ url_for('purchase_order.create_purchase_order') }}">
+    <p>Select a supplier and add products with ordered quantities.</p>
+
+    <div style="margin-bottom: 16px;">
+        <label for="supplier_id"><strong>Supplier:</strong></label>
+        <select id="supplier_id" name="supplier_id" required>
+            <option value="">Select a supplier</option>
+            {% for s in suppliers %}
+            <option value="{{ s.id }}" {% if selected_supplier_id and selected_supplier_id|string == s.id|string %}selected{% endif %}>
+                {{ s.name }}
+            </option>
+            {% endfor %}
+        </select>
+    </div>
+
+    <h3>Order Line Items</h3>
+    <div id="po-items">
+        <div class="po-item" style="margin-bottom: 12px; padding: 10px; background-color: #f9f9f9; border-radius: 4px;">
+            <label>
+                <strong>Product:</strong>
+                <select name="product_id" required>
+                    <option value="">Select a product</option>
+                    {% for product in products %}
+                    <option value="{{ product.id }}">
+                        {{ product.name }} {% if product.sku %}(SKU: {{ product.sku }}){% endif %} — Stock: {{ product.stock }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </label>
+
+            <label style="margin-left: 16px;">
+                <strong>Quantity:</strong>
+                <input type="number" name="quantity" min="1" step="1" required placeholder="Qty">
+            </label>
+        </div>
+    </div>
+
+    <div style="margin: 16px 0;">
+        <button type="button" onclick="addPoItem()">Add another product</button>
+        <button type="submit">Create Purchase Order</button>
+    </div>
+</form>
+
+<p>
+    <a href="{{ url_for('purchase_order.list_purchase_orders') }}">Back to Purchase Orders</a>
+</p>
+
+<script>
+function addPoItem() {
+    const container = document.getElementById("po-items");
+    const firstItem = container.querySelector(".po-item");
+    const newItem = firstItem.cloneNode(true);
+
+    newItem.querySelector("select").selectedIndex = 0;
+    newItem.querySelector("input").value = "";
+
+    container.appendChild(newItem);
+}
+</script>
+{% endblock %}

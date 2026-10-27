@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}{{ purchase_order.order_number }} | Electronics Store{% endblock %}
+{% block content %}
+<h2>Purchase Order: {{ purchase_order.order_number }}</h2>
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+        <p class="{{ category }}" role="alert">{{ message }}</p>
+    {% endfor %}
+{% endwith %}
+
+<div style="background-color: #f9f9f9; padding: 16px; border-radius: 6px; margin-bottom: 20px;">
+    <p><strong>Supplier:</strong> {{ purchase_order.supplier.name if purchase_order.supplier else "N/A" }}</p>
+    {% if purchase_order.supplier and purchase_order.supplier.contact_info %}
+    <p><strong>Contact:</strong> {{ purchase_order.supplier.contact_info }}</p>
+    {% endif %}
+    {% if purchase_order.supplier and purchase_order.supplier.address %}
+    <p><strong>Address:</strong> {{ purchase_order.supplier.address }}</p>
+    {% endif %}
+    <p><strong>Status:</strong> <span class="status-badge">{{ purchase_order.status }}</span></p>
+    <p><strong>Created Date:</strong> {{ purchase_order.created_at.strftime('%Y-%m-%d %H:%M UTC') if purchase_order.created_at else "—" }}</p>
+</div>
+
+<h3>Ordered Products</h3>
+<table>
+    <thead>
+        <tr>
+            <th>Product</th>
+            <th>SKU</th>
+            <th>Quantity Ordered</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for item in purchase_order.items %}
+        <tr>
+            <td>{{ item.product.name if item.product else item.product_name or "—" }}</td>
+            <td>{{ item.product.sku if item.product and item.product.sku else "—" }}</td>
+            <td>{{ item.quantity }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+<p style="margin-top: 20px;">
+    <a href="{{ url_for('purchase_order.list_purchase_orders') }}">Back to Purchase Orders</a> |
+    <a href="{{ url_for('purchase_order.create_purchase_order') }}">Create Another Purchase Order</a>
+</p>
+{% endblock %}
