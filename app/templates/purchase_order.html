@@ -19,7 +19,7 @@
     {% endif %}
     <p><strong>Status:</strong> <span class="status-badge">{{ purchase_order.status }}</span></p>
     <p><strong>Created Date:</strong> {{ purchase_order.created_at.strftime('%Y-%m-%d %H:%M UTC') if purchase_order.created_at else "—" }}</p>
-    {% if purchase_order.status == 'Pending' %}
+    {% if purchase_order.status in ['Pending', 'Partially Received'] %}
     <div style="margin-top: 12px;">
         <form method="POST" action="{{ url_for('purchase_order.receive_purchase_order', po_id=purchase_order.id) }}" style="display:inline;" onsubmit="return confirm('Mark this purchase order as received and update product stock?');">
             <button type="submit">Mark as Received</button>
@@ -38,6 +38,7 @@
             <th>SKU</th>
             <th>Quantity Ordered</th>
             <th>Quantity Received</th>
+            <th>Quantity Pending</th>
         </tr>
     </thead>
     <tbody>
@@ -47,10 +48,48 @@
             <td>{{ item.product.sku if item.product and item.product.sku else "—" }}</td>
             <td>{{ item.quantity }}</td>
             <td>{{ item.received_quantity }}</td>
+            <td>{{ item.pending_quantity }}</td>
         </tr>
         {% endfor %}
     </tbody>
 </table>
+
+{% if purchase_order.status in ['Pending', 'Partially Received'] %}
+<div style="margin-top: 24px; padding: 16px; background-color: #f9f9f9; border: 1px solid #ddd; border-radius: 6px;">
+    <h3>Record Delivery</h3>
+    <p>Specify the newly delivered quantity for each product below:</p>
+    <form method="POST" action="{{ url_for('purchase_order.record_partial_delivery', po_id=purchase_order.id) }}">
+        <table>
+            <thead>
+                <tr>
+                    <th>Product</th>
+                    <th>Pending Quantity</th>
+                    <th>Quantity Delivered</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in purchase_order.items %}
+                <tr>
+                    <td>{{ item.product.name if item.product else item.product_name or "—" }}</td>
+                    <td>{{ item.pending_quantity }}</td>
+                    <td>
+                        {% if item.pending_quantity > 0 %}
+                        <input type="hidden" name="item_id" value="{{ item.id }}">
+                        <input type="number" name="delivered_quantity" min="1" max="{{ item.pending_quantity }}" placeholder="Qty to receive">
+                        {% else %}
+                        <span>Fully Received</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        <div style="margin-top: 12px;">
+            <button type="submit">Record Delivery</button>
+        </div>
+    </form>
+</div>
+{% endif %}
 
 <p style="margin-top: 20px;">
     <a href="{{ url_for('purchase_order.list_purchase_orders') }}">Back to Purchase Orders</a> |

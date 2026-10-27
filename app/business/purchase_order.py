@@ -63,6 +63,27 @@ def parse_quantity(raw_val):
         raise PurchaseOrderValidationError("Quantity must be a positive whole number.")
 
 
+def parse_delivery_quantity(raw_val):
+    if raw_val is None or isinstance(raw_val, bool):
+        raise PurchaseOrderValidationError("Delivered quantity is required.")
+    s = str(raw_val).strip()
+    if not s:
+        raise PurchaseOrderValidationError("Delivered quantity is required.")
+    if "." in s or "e" in s.lower() or "E" in s:
+        raise PurchaseOrderValidationError(
+            "Delivered quantity must be a positive whole number."
+        )
+    try:
+        val = int(s)
+        if str(val) != s or val <= 0:
+            raise ValueError
+        return val
+    except (ValueError, TypeError):
+        raise PurchaseOrderValidationError(
+            "Delivered quantity must be a positive whole number."
+        )
+
+
 def create_purchase_order(
     supplier_id,
     items,
@@ -160,7 +181,7 @@ def receive_purchase_order(
     commit=True,
 ):
     """
-    Mark a pending purchase order as received and increase product stock atomically.
+    Mark a pending or partially received purchase order as received and increase product stock atomically.
 
     Raises:
         PurchaseOrderValidationError: if PO is missing, already received, or has invalid data.
@@ -181,7 +202,7 @@ def receive_purchase_order(
     if po.status == "Received":
         raise PurchaseOrderValidationError("Purchase order has already been received.")
 
-    if po.status != "Pending":
+    if po.status not in ("Pending", "Partially Received"):
         raise PurchaseOrderValidationError(
             f"Cannot receive purchase order with status '{po.status}'."
         )
@@ -192,7 +213,7 @@ def receive_purchase_order(
         )
 
     try:
-        # Increase stock for each item in the purchase order
+        # Increase stock only for the remaining pending quantity of each item
         for item in po.items:
             product = db.session.get(product_model, item.product_id)
             if product is None:
@@ -200,18 +221,184 @@ def receive_purchase_order(
                     f"Product {item.product_id} does not exist."
                 )
 
-            product.stock = int(product.stock) + int(item.quantity)
-            item.received_quantity = int(item.quantity)
+            delta = int(item.quantity) - int(item.received_quantity or 0)
+            if delta > 0:
+                product.stock = int(product.stock) + delta
+                item.received_quantity = int(item.quantity)
 
-            # Record restock movement for audit history and reports
+                # Record restock movement for audit history and reports
+                restock_record = ProductRestock(
+                    product_id=product.id,
+                    quantity=delta,
+                    reference=f"PO #{po.id}",
+                )
+                db.session.add(restock_record)
+            else:
+                item.received_quantity = int(item.quantity)
+
+        po.status = "Received"
+
+        if commit:
+            db.session.commit()
+
+        return po
+    except Exception:
+        db.session.rollback()
+        raise
+
+
+def record_partial_delivery(
+    po_id,
+    deliveries,
+    po_model=PurchaseOrder,
+    product_model=Product,
+    commit=True,
+):
+    """
+    Record partial delivery quantities for line items in a purchase order.
+    Increases product stock only by the newly delivered quantities.
+    Updates the purchase order status to 'Partially Received' or 'Received'.
+
+    Raises:
+        PurchaseOrderValidationError: on invalid PO, negative/zero/excessive quantities, or non-matching items.
+    """
+    if po_id is None or isinstance(po_id, bool):
+        raise PurchaseOrderValidationError("Purchase order ID is required.")
+    try:
+        valid_id = int(str(po_id).strip())
+        if valid_id <= 0:
+            raise ValueError
+    except (ValueError, TypeError):
+        raise PurchaseOrderValidationError("Invalid purchase order ID.")
+
+    po = db.session.get(po_model, valid_id)
+    if po is None:
+        raise PurchaseOrderValidationError(f"Purchase order {valid_id} does not exist.")
+
+    if po.status == "Received":
+        raise PurchaseOrderValidationError("Purchase order has already been received.")
+
+    if po.status not in ("Pending", "Partially Received"):
+        raise PurchaseOrderValidationError(
+            f"Cannot record delivery for purchase order with status '{po.status}'."
+        )
+
+    if not po.items:
+        raise PurchaseOrderValidationError(
+            "Purchase order contains no items to receive."
+        )
+
+    if not deliveries:
+        raise PurchaseOrderValidationError("No delivery quantities provided.")
+
+    if isinstance(deliveries, dict):
+        if "deliveries" in deliveries:
+            deliveries = deliveries["deliveries"]
+        elif "items" in deliveries:
+            deliveries = deliveries["items"]
+        elif "item_id" in deliveries or "product_id" in deliveries:
+            deliveries = [deliveries]
+        else:
+            deliveries = [{"item_id": k, "quantity": v} for k, v in deliveries.items()]
+
+    if not isinstance(deliveries, (list, tuple)) or not deliveries:
+        raise PurchaseOrderValidationError("No delivery quantities provided.")
+
+    # Build lookup maps for po.items
+    items_by_id = {item.id: item for item in po.items if item.id is not None}
+    items_by_product_id = {item.product_id: item for item in po.items}
+
+    delivered_by_item = {}
+
+    for entry in deliveries:
+        if isinstance(entry, dict):
+            raw_item_id = entry.get("item_id")
+            raw_product_id = entry.get("product_id")
+            raw_qty = (
+                entry.get("quantity")
+                if "quantity" in entry
+                else entry.get("delivered_quantity")
+            )
+        elif isinstance(entry, (list, tuple)) and len(entry) >= 2:
+            raw_item_id, raw_qty = entry[0], entry[1]
+            raw_product_id = None
+        else:
+            raise PurchaseOrderValidationError("Invalid delivery item format.")
+
+        qty = parse_delivery_quantity(raw_qty)
+
+        # Match to purchase order item
+        matched_item = None
+        if raw_item_id is not None:
+            try:
+                iid = int(str(raw_item_id).strip())
+                matched_item = items_by_id.get(iid)
+                if matched_item is None and iid in items_by_product_id:
+                    matched_item = items_by_product_id[iid]
+            except (ValueError, TypeError):
+                pass
+
+        if matched_item is None and raw_product_id is not None:
+            try:
+                pid = int(str(raw_product_id).strip())
+                matched_item = items_by_product_id.get(pid)
+            except (ValueError, TypeError):
+                pass
+
+        if matched_item is None:
+            target_id = raw_item_id if raw_item_id is not None else raw_product_id
+            raise PurchaseOrderValidationError(
+                f"Line item '{target_id}' does not belong to purchase order #{po.id}."
+            )
+
+        delivered_by_item[matched_item.id] = (
+            delivered_by_item.get(matched_item.id, 0) + qty
+        )
+
+    if not delivered_by_item:
+        raise PurchaseOrderValidationError("No delivery quantities provided.")
+
+    # Validate against pending quantities
+    for item_id, delivery_qty in delivered_by_item.items():
+        item = items_by_id[item_id]
+        current_received = int(item.received_quantity or 0)
+        pending = int(item.quantity) - current_received
+        prod_name = (
+            item.product.name
+            if item.product
+            else item.product_name or f"Product #{item.product_id}"
+        )
+
+        if pending <= 0:
+            raise PurchaseOrderValidationError(
+                f"Product '{prod_name}' has already been fully received."
+            )
+
+        if delivery_qty > pending:
+            raise PurchaseOrderValidationError(
+                f"Delivered quantity ({delivery_qty}) exceeds pending quantity ({pending}) for '{prod_name}'. Cumulative received quantity cannot exceed ordered quantity."
+            )
+
+    try:
+        for item_id, delivery_qty in delivered_by_item.items():
+            item = items_by_id[item_id]
+            product = db.session.get(product_model, item.product_id)
+            if product is None:
+                raise PurchaseOrderValidationError(
+                    f"Product {item.product_id} does not exist."
+                )
+
+            product.stock = int(product.stock) + delivery_qty
+            item.received_quantity = int(item.received_quantity or 0) + delivery_qty
+
             restock_record = ProductRestock(
                 product_id=product.id,
-                quantity=item.quantity,
+                quantity=delivery_qty,
                 reference=f"PO #{po.id}",
             )
             db.session.add(restock_record)
 
-        po.status = "Received"
+        po.update_status_from_items()
 
         if commit:
             db.session.commit()
