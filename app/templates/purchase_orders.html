@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Purchase Orders | Electronics Store{% endblock %}
+{% block content %}
+<h2>Purchase Orders</h2>
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+        <p class="{{ category }}" role="alert">{{ message }}</p>
+    {% endfor %}
+{% endwith %}
+
+<p>
+    <a href="{{ url_for('purchase_order.create_purchase_order') }}">Create Purchase Order</a>
+</p>
+
+{% if purchase_orders %}
+<table>
+    <thead>
+        <tr>
+            <th>PO Number</th>
+            <th>Supplier</th>
+            <th>Total Quantity</th>
+            <th>Status</th>
+            <th>Date Created</th>
+            <th>Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for po in purchase_orders %}
+        <tr>
+            <td>{{ po.order_number }}</td>
+            <td>{{ po.supplier.name if po.supplier else "—" }}</td>
+            <td>{{ po.total_quantity }}</td>
+            <td><span class="status-{{ po.status|lower }}">{{ po.status }}</span></td>
+            <td>{{ po.created_at.strftime('%Y-%m-%d %H:%M') if po.created_at else "—" }}</td>
+            <td>
+                <a href="{{ url_for('purchase_order.view_purchase_order', po_id=po.id) }}">View</a>
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p>No purchase orders found.</p>
+{% endif %}
+{% endblock %}
