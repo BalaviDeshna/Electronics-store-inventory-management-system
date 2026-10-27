@@ -15,6 +15,13 @@
 {% if is_low %}
 <div class="alert alert-warning low-stock-alert" role="alert" style="background-color: #fff3cd; color: #856404; border: 1px solid #ffeeba; padding: 12px 16px; border-radius: 6px; margin: 16px 0;">
     <strong>Low-Stock Alert:</strong> Current stock ({{ product.stock }}) is below the reorder threshold ({{ product.reorder_threshold }}). Restocking is required.
+    {% if current_user.is_authenticated and current_user.role in ['manager', 'admin'] %}
+    <div style="margin-top: 8px;">
+        <form action="{{ url_for('purchase_order.create_po_from_low_stock', product_id=product.id) }}" method="post" style="display:inline;" onsubmit="return confirm('Create purchase order for {{ product.name }}?');">
+            <button type="submit">Create Purchase Order</button>
+        </form>
+    </div>
+    {% endif %}
 </div>
 {% endif %}
 

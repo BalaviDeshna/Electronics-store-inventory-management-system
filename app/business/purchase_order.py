@@ -407,3 +407,111 @@ def record_partial_delivery(
     except Exception:
         db.session.rollback()
         raise
+
+
+def create_purchase_order_from_low_stock(
+    product_id,
+    quantity=None,
+    supplier_id=None,
+    allow_duplicate=False,
+    product_model=Product,
+    supplier_model=Supplier,
+    po_model=PurchaseOrder,
+    po_item_model=PurchaseOrderItem,
+    commit=True,
+):
+    """
+    Create a purchase order directly from an active low-stock alert for a product.
+
+    - Validates that the product exists.
+    - Validates that the product is currently below its reorder threshold (rejects stale alerts).
+    - Identifies the assigned supplier (from product.supplier_id or explicit supplier_id).
+    - Rejects products with no suitable supplier.
+    - Determines suggested order quantity based on threshold deficit (threshold - stock) or user override.
+    - Prevents accidental duplicate pending purchase orders for the same product unless allow_duplicate=True.
+    - Reuses create_purchase_order() to ensure consistency and atomic transaction behavior.
+    """
+    if product_id is None or isinstance(product_id, bool):
+        raise PurchaseOrderValidationError("Product ID is required.")
+    try:
+        valid_pid = int(str(product_id).strip())
+        if valid_pid <= 0:
+            raise ValueError
+    except (ValueError, TypeError):
+        raise PurchaseOrderValidationError("Invalid product ID.")
+
+    product = db.session.get(product_model, valid_pid)
+    if product is None:
+        raise PurchaseOrderValidationError(f"Product with ID {valid_pid} does not exist.")
+
+    # Validate active low-stock condition (handling stale alerts)
+    threshold = getattr(product, "reorder_threshold", 0) or 0
+    stock = getattr(product, "stock", 0) or 0
+    is_low = getattr(product, "is_below_reorder_threshold", False) or (
+        threshold > 0 and stock < threshold
+    )
+    if not is_low:
+        raise PurchaseOrderValidationError(
+            f"Product '{product.name}' is not currently below its reorder threshold."
+        )
+
+    # Determine supplier
+    target_supplier_id = None
+    if supplier_id is not None:
+        try:
+            target_supplier_id = parse_supplier_id(supplier_id)
+        except PurchaseOrderValidationError:
+            raise PurchaseOrderValidationError("Selected supplier does not exist.")
+    elif getattr(product, "supplier_id", None):
+        target_supplier_id = product.supplier_id
+
+    if not target_supplier_id:
+        raise PurchaseOrderValidationError(
+            f"Product '{product.name}' has no assigned supplier. Please assign a supplier before creating a purchase order."
+        )
+
+    supplier = db.session.get(supplier_model, target_supplier_id)
+    if supplier is None:
+        raise PurchaseOrderValidationError(
+            f"Supplier with ID {target_supplier_id} does not exist."
+        )
+
+    # Determine order quantity
+    if quantity is not None and str(quantity).strip() != "":
+        order_qty = parse_quantity(quantity)
+    else:
+        order_qty = getattr(
+            product, "suggested_reorder_quantity", max(1, threshold - stock)
+        )
+        if order_qty <= 0:
+            order_qty = max(1, threshold - stock)
+
+    # Prevent accidental duplicate pending purchase orders for the same product
+    if not allow_duplicate:
+        existing_item = (
+            db.session.query(po_item_model)
+            .join(po_model, po_item_model.purchase_order_id == po_model.id)
+            .filter(
+                po_item_model.product_id == product.id,
+                po_model.status.in_(["Pending", "Partially Received"]),
+            )
+            .first()
+        )
+        if existing_item is not None:
+            existing_po = existing_item.purchase_order
+            raise PurchaseOrderValidationError(
+                f"A pending purchase order (#{existing_po.id}) already exists for product '{product.name}'."
+            )
+
+    items = [{"product_id": product.id, "quantity": order_qty}]
+
+    return create_purchase_order(
+        supplier_id=supplier.id,
+        items=items,
+        status="Pending",
+        supplier_model=supplier_model,
+        product_model=product_model,
+        po_model=po_model,
+        po_item_model=po_item_model,
+        commit=commit,
+    )

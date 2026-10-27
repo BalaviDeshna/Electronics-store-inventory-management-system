@@ -1,6 +1,7 @@
 from app.business.purchase_order import (
     PurchaseOrderValidationError,
     create_purchase_order,
+    create_purchase_order_from_low_stock,
     receive_purchase_order,
     record_partial_delivery,
 )
@@ -17,6 +18,7 @@ __all__ = [
     "SaleValidationError",
     "StockUpdateError",
     "create_purchase_order",
+    "create_purchase_order_from_low_stock",
     "create_sale",
     "money",
     "process_return",

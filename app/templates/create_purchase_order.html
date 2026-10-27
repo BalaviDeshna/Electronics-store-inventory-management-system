@@ -32,7 +32,7 @@
                 <select name="product_id" required>
                     <option value="">Select a product</option>
                     {% for product in products %}
-                    <option value="{{ product.id }}">
+                    <option value="{{ product.id }}" {% if selected_product_id and selected_product_id|string == product.id|string %}selected{% endif %}>
                         {{ product.name }} {% if product.sku %}(SKU: {{ product.sku }}){% endif %} — Stock: {{ product.stock }}
                     </option>
                     {% endfor %}
@@ -41,7 +41,7 @@
 
             <label style="margin-left: 16px;">
                 <strong>Quantity:</strong>
-                <input type="number" name="quantity" min="1" step="1" required placeholder="Qty">
+                <input type="number" name="quantity" min="1" step="1" required placeholder="Qty" value="{{ selected_quantity or '' }}">
             </label>
         </div>
     </div>
