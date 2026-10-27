@@ -2,6 +2,7 @@ from app.business.purchase_order import (
     PurchaseOrderValidationError,
     create_purchase_order,
     receive_purchase_order,
+    record_partial_delivery,
 )
 from app.business.sales import SaleValidationError, create_sale, money
 from app.business.stock import (
@@ -20,6 +21,7 @@ __all__ = [
     "money",
     "process_return",
     "receive_purchase_order",
+    "record_partial_delivery",
     "restock_inventory",
     "restock_product",
 ]

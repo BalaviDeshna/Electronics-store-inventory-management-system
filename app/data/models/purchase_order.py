@@ -47,6 +47,27 @@ class PurchaseOrder(db.Model):
     def total_quantity(self):
         return sum(item.quantity for item in self.items)
 
+    @property
+    def total_received_quantity(self):
+        return sum(item.received_quantity or 0 for item in self.items)
+
+    @property
+    def total_pending_quantity(self):
+        return sum(item.pending_quantity for item in self.items)
+
+    def update_status_from_items(self):
+        """Update purchase order status based on current items' received quantities."""
+        if not self.items:
+            return
+        all_received = all((item.received_quantity or 0) >= item.quantity for item in self.items)
+        none_received = all((item.received_quantity or 0) == 0 for item in self.items)
+        if all_received:
+            self.status = "Received"
+        elif none_received:
+            self.status = "Pending"
+        else:
+            self.status = "Partially Received"
+
     def mark_as_received(self):
         """Update purchase order status to Received and set received quantities."""
         self.status = "Received"
@@ -61,6 +82,9 @@ class PurchaseOrder(db.Model):
             "supplier_name": self.supplier.name if self.supplier else None,
             "status": self.status,
             "created_at": self.created_at.isoformat() if self.created_at else None,
+            "total_quantity": self.total_quantity,
+            "total_received_quantity": self.total_received_quantity,
+            "total_pending_quantity": self.total_pending_quantity,
             "items": [item.to_dict() for item in self.items],
         }
 
@@ -111,6 +135,14 @@ class PurchaseOrderItem(db.Model):
         return self.product.name if self.product else None
 
     @property
+    def pending_quantity(self):
+        return max(0, self.quantity - (self.received_quantity or 0))
+
+    @property
+    def is_fully_received(self):
+        return (self.received_quantity or 0) >= self.quantity
+
+    @property
     def line_total(self):
         if self.unit_price is not None:
             return self.unit_price * self.quantity
@@ -126,6 +158,7 @@ class PurchaseOrderItem(db.Model):
             "product_name": self.product_name,
             "quantity": self.quantity,
             "received_quantity": self.received_quantity,
+            "pending_quantity": self.pending_quantity,
             "unit_price": str(self.unit_price) if self.unit_price is not None else None,
             "line_total": str(self.line_total),
         }

@@ -5,6 +5,7 @@ from app.business.purchase_order import (
     PurchaseOrderValidationError,
     create_purchase_order,
     receive_purchase_order,
+    record_partial_delivery,
 )
 from app.data.extensions import db
 from app.data.models import Product, ProductRestock, PurchaseOrder, Supplier
@@ -675,3 +676,520 @@ def test_purchase_order_detail_view_shows_receive_button_when_pending_and_hides_
     assert res_received.status_code == 200
     assert b"Mark as Received" not in res_received.data
     assert b"This purchase order has been marked as Received" in res_received.data
+
+
+# ==========================================
+# 5. US-21: Partial Purchase Order Deliveries Tests
+# ==========================================
+
+
+def test_partial_delivery_single_product_business_logic(app):
+    with app.app_context():
+        supplier = Supplier(name="Delta Electronics")
+        product = Product(name="Smart Watch", price=Decimal("199.99"), stock=10)
+        db.session.add_all([supplier, product])
+        db.session.commit()
+
+        po = create_purchase_order(
+            supplier_id=supplier.id,
+            items=[{"product_id": product.id, "quantity": 15}],
+        )
+        assert po.status == "Pending"
+        assert product.stock == 10
+
+        # Deliver 5 units out of 15
+        updated_po = record_partial_delivery(
+            po.id,
+            [{"product_id": product.id, "quantity": 5}],
+        )
+
+        assert updated_po.status == "Partially Received"
+        assert updated_po.items[0].quantity == 15
+        assert updated_po.items[0].received_quantity == 5
+        assert updated_po.items[0].pending_quantity == 10
+        assert updated_po.total_received_quantity == 5
+        assert updated_po.total_pending_quantity == 10
+
+        # Stock must increase ONLY by delivered quantity (10 + 5 = 15)
+        reloaded_product = db.session.get(Product, product.id)
+        assert reloaded_product.stock == 15
+
+        # Restock audit entry created
+        restock = ProductRestock.query.filter_by(product_id=product.id).first()
+        assert restock is not None
+        assert restock.quantity == 5
+        assert f"PO #{po.id}" in restock.reference
+
+
+def test_partial_delivery_multi_product_business_logic(app):
+    with app.app_context():
+        supplier = Supplier(name="Multi Distro")
+        p1 = Product(name="Item 1", price=Decimal("10.00"), stock=20)
+        p2 = Product(name="Item 2", price=Decimal("20.00"), stock=30)
+        db.session.add_all([supplier, p1, p2])
+        db.session.commit()
+
+        po = create_purchase_order(
+            supplier_id=supplier.id,
+            items=[
+                {"product_id": p1.id, "quantity": 10},
+                {"product_id": p2.id, "quantity": 20},
+            ],
+        )
+
+        # Deliver 4 of P1 and 12 of P2
+        record_partial_delivery(
+            po.id,
+            [
+                {"product_id": p1.id, "quantity": 4},
+                {"product_id": p2.id, "quantity": 12},
+            ],
+        )
+
+        assert db.session.get(Product, p1.id).stock == 24  # 20 + 4
+        assert db.session.get(Product, p2.id).stock == 42  # 30 + 12
+        assert po.status == "Partially Received"
+
+        item1 = next(it for it in po.items if it.product_id == p1.id)
+        item2 = next(it for it in po.items if it.product_id == p2.id)
+        assert item1.received_quantity == 4
+        assert item1.pending_quantity == 6
+        assert item2.received_quantity == 12
+        assert item2.pending_quantity == 8
+
+
+def test_multiple_partial_deliveries_fulfill_order(app):
+    with app.app_context():
+        supplier = Supplier(name="Step Supplier")
+        product = Product(name="Step Item", price=Decimal("15.00"), stock=50)
+        db.session.add_all([supplier, product])
+        db.session.commit()
+
+        po = create_purchase_order(
+            supplier_id=supplier.id,
+            items=[{"product_id": product.id, "quantity": 10}],
+        )
+
+        # 1st delivery: 3
+        record_partial_delivery(po.id, [{"product_id": product.id, "quantity": 3}])
+        assert db.session.get(Product, product.id).stock == 53
+        assert po.status == "Partially Received"
+        assert po.items[0].received_quantity == 3
+        assert po.items[0].pending_quantity == 7
+
+        # 2nd delivery: 4
+        record_partial_delivery(po.id, [{"product_id": product.id, "quantity": 4}])
+        assert db.session.get(Product, product.id).stock == 57
+        assert po.status == "Partially Received"
+        assert po.items[0].received_quantity == 7
+        assert po.items[0].pending_quantity == 3
+
+        # 3rd delivery: 3 (fulfills entire order)
+        record_partial_delivery(po.id, [{"product_id": product.id, "quantity": 3}])
+        assert db.session.get(Product, product.id).stock == 60
+        assert po.status == "Received"
+        assert po.items[0].received_quantity == 10
+        assert po.items[0].pending_quantity == 0
+
+        # Further delivery rejected because PO is now Received
+        with pytest.raises(
+            PurchaseOrderValidationError, match="already been received"
+        ):
+            record_partial_delivery(
+                po.id, [{"product_id": product.id, "quantity": 1}]
+            )
+
+        # Stock remains 60
+        assert db.session.get(Product, product.id).stock == 60
+
+
+def test_full_receipt_after_partial_delivery_does_not_double_count(app):
+    with app.app_context():
+        supplier = Supplier(name="Hybrid Supplier")
+        product = Product(name="Hybrid Item", price=Decimal("25.00"), stock=100)
+        db.session.add_all([supplier, product])
+        db.session.commit()
+
+        po = create_purchase_order(
+            supplier_id=supplier.id,
+            items=[{"product_id": product.id, "quantity": 20}],
+        )
+
+        # Deliver 8 units partially
+        record_partial_delivery(po.id, [{"product_id": product.id, "quantity": 8}])
+        assert db.session.get(Product, product.id).stock == 108
+        assert po.status == "Partially Received"
+
+        # Now perform full receive on the partially-delivered PO
+        receive_purchase_order(po.id)
+
+        # Stock must increase only by the remaining 12 units (108 + 12 = 120)
+        assert db.session.get(Product, product.id).stock == 120
+        assert po.status == "Received"
+        assert po.items[0].received_quantity == 20
+        assert po.items[0].pending_quantity == 0
+
+        # Two audit restocks: 8 and 12
+        restocks = ProductRestock.query.filter_by(product_id=product.id).all()
+        assert len(restocks) == 2
+        assert {r.quantity for r in restocks} == {8, 12}
+
+        # Second full receive attempt fails
+        with pytest.raises(
+            PurchaseOrderValidationError, match="already been received"
+        ):
+            receive_purchase_order(po.id)
+
+        assert db.session.get(Product, product.id).stock == 120
+
+
+def test_partial_delivery_rejects_zero_quantity(app):
+    with app.app_context():
+        supplier = Supplier(name="Zero Supplier")
+        product = Product(name="Zero Item", price=Decimal("10.00"), stock=10)
+        db.session.add_all([supplier, product])
+        db.session.commit()
+
+        po = create_purchase_order(
+            supplier_id=supplier.id,
+            items=[{"product_id": product.id, "quantity": 10}],
+        )
+
+        with pytest.raises(
+            PurchaseOrderValidationError, match="positive whole number"
+        ):
+            record_partial_delivery(
+                po.id, [{"product_id": product.id, "quantity": 0}]
+            )
+
+        assert db.session.get(Product, product.id).stock == 10
+        assert po.status == "Pending"
+
+
+def test_partial_delivery_rejects_negative_quantity(app):
+    with app.app_context():
+        supplier = Supplier(name="Negative Supplier")
+        product = Product(name="Negative Item", price=Decimal("10.00"), stock=10)
+        db.session.add_all([supplier, product])
+        db.session.commit()
+
+        po = create_purchase_order(
+            supplier_id=supplier.id,
+            items=[{"product_id": product.id, "quantity": 10}],
+        )
+
+        with pytest.raises(
+            PurchaseOrderValidationError, match="positive whole number"
+        ):
+            record_partial_delivery(
+                po.id, [{"product_id": product.id, "quantity": -3}]
+            )
+
+        assert db.session.get(Product, product.id).stock == 10
+
+
+def test_partial_delivery_rejects_malformed_quantity(app):
+    with app.app_context():
+        supplier = Supplier(name="Malformed Supplier")
+        product = Product(name="Malformed Item", price=Decimal("10.00"), stock=10)
+        db.session.add_all([supplier, product])
+        db.session.commit()
+
+        po = create_purchase_order(
+            supplier_id=supplier.id,
+            items=[{"product_id": product.id, "quantity": 10}],
+        )
+
+        for malformed in ["abc", "2.5", "", None, True]:
+            with pytest.raises(PurchaseOrderValidationError):
+                record_partial_delivery(
+                    po.id, [{"product_id": product.id, "quantity": malformed}]
+                )
+
+        assert db.session.get(Product, product.id).stock == 10
+
+
+def test_partial_delivery_rejects_over_delivery(app):
+    with app.app_context():
+        supplier = Supplier(name="Over Delivery Supplier")
+        product = Product(name="Over Item", price=Decimal("10.00"), stock=10)
+        db.session.add_all([supplier, product])
+        db.session.commit()
+
+        po = create_purchase_order(
+            supplier_id=supplier.id,
+            items=[{"product_id": product.id, "quantity": 10}],
+        )
+
+        # Deliver 6 first
+        record_partial_delivery(po.id, [{"product_id": product.id, "quantity": 6}])
+        assert db.session.get(Product, product.id).stock == 16
+
+        # Attempt to deliver 5 (pending is 4) -> must fail!
+        with pytest.raises(
+            PurchaseOrderValidationError, match="exceeds pending quantity"
+        ):
+            record_partial_delivery(
+                po.id, [{"product_id": product.id, "quantity": 5}]
+            )
+
+        # Stock must not have increased
+        assert db.session.get(Product, product.id).stock == 16
+        assert po.items[0].received_quantity == 6
+
+
+def test_partial_delivery_rejects_duplicate_submission_preventing_double_stock(app):
+    with app.app_context():
+        supplier = Supplier(name="Dupe Deliver Supplier")
+        product = Product(name="Dupe Item", price=Decimal("10.00"), stock=10)
+        db.session.add_all([supplier, product])
+        db.session.commit()
+
+        po = create_purchase_order(
+            supplier_id=supplier.id,
+            items=[{"product_id": product.id, "quantity": 8}],
+        )
+
+        # First delivery of 5
+        record_partial_delivery(po.id, [{"product_id": product.id, "quantity": 5}])
+        assert db.session.get(Product, product.id).stock == 15
+
+        # Duplicate delivery of 5 would exceed pending 3 -> rejected!
+        with pytest.raises(
+            PurchaseOrderValidationError, match="exceeds pending quantity"
+        ):
+            record_partial_delivery(
+                po.id, [{"product_id": product.id, "quantity": 5}]
+            )
+
+        assert db.session.get(Product, product.id).stock == 15
+
+
+def test_partial_delivery_rejects_line_item_not_in_purchase_order(app):
+    with app.app_context():
+        supplier = Supplier(name="Wrong Item Supplier")
+        p1 = Product(name="In PO", price=Decimal("10.00"), stock=10)
+        p2 = Product(name="Not In PO", price=Decimal("20.00"), stock=10)
+        db.session.add_all([supplier, p1, p2])
+        db.session.commit()
+
+        po = create_purchase_order(
+            supplier_id=supplier.id,
+            items=[{"product_id": p1.id, "quantity": 5}],
+        )
+
+        with pytest.raises(
+            PurchaseOrderValidationError, match="does not belong to purchase order"
+        ):
+            record_partial_delivery(
+                po.id, [{"product_id": p2.id, "quantity": 2}]
+            )
+
+
+def test_partial_delivery_rejects_nonexistent_purchase_order(app):
+    with app.app_context():
+        with pytest.raises(
+            PurchaseOrderValidationError, match="does not exist"
+        ):
+            record_partial_delivery(
+                999999, [{"product_id": 1, "quantity": 5}]
+            )
+
+
+def test_partial_delivery_database_failure_rolls_back(app, monkeypatch):
+    with app.app_context():
+        supplier = Supplier(name="Rollback Supplier")
+        product = Product(name="Rollback Item", price=Decimal("15.00"), stock=25)
+        db.session.add_all([supplier, product])
+        db.session.commit()
+
+        po = create_purchase_order(
+            supplier_id=supplier.id,
+            items=[{"product_id": product.id, "quantity": 10}],
+        )
+
+        def mock_commit():
+            raise Exception("Database failure during partial delivery commit")
+
+        monkeypatch.setattr(db.session, "commit", mock_commit)
+
+        with pytest.raises(Exception, match="Database failure"):
+            record_partial_delivery(
+                po.id, [{"product_id": product.id, "quantity": 5}]
+            )
+
+        monkeypatch.undo()
+
+        # Stock and received quantity must be rolled back!
+        assert db.session.get(Product, product.id).stock == 25
+        reloaded_po = db.session.get(PurchaseOrder, po.id)
+        assert reloaded_po.status == "Pending"
+        assert reloaded_po.items[0].received_quantity == 0
+
+
+def test_partial_delivery_requires_authentication(client):
+    response = client.post("/purchase-orders/1/partial-receive")
+    assert response.status_code == 302
+    assert "/login" in response.headers.get("Location", "")
+
+
+def test_staff_cannot_record_partial_delivery(client, logged_in_staff):
+    supplier = Supplier(name="Staff Partial Supplier")
+    product = Product(name="Staff Partial Product", price=Decimal("20.00"), stock=10)
+    db.session.add_all([supplier, product])
+    db.session.commit()
+
+    po = create_purchase_order(
+        supplier_id=supplier.id,
+        items=[{"product_id": product.id, "quantity": 10}],
+    )
+
+    response = client.post(
+        f"/purchase-orders/{po.id}/partial-receive",
+        data={"item_id": po.items[0].id, "delivered_quantity": 4},
+    )
+    assert response.status_code == 403
+
+    # Stock and status untouched
+    assert db.session.get(Product, product.id).stock == 10
+    assert db.session.get(PurchaseOrder, po.id).status == "Pending"
+
+
+def test_manager_can_record_partial_delivery_via_http(client, logged_in_manager):
+    supplier = Supplier(name="Manager Partial Supplier")
+    product = Product(name="Manager Partial Product", price=Decimal("30.00"), stock=5)
+    db.session.add_all([supplier, product])
+    db.session.commit()
+
+    po = create_purchase_order(
+        supplier_id=supplier.id,
+        items=[{"product_id": product.id, "quantity": 15}],
+    )
+
+    response = client.post(
+        f"/purchase-orders/{po.id}/partial-receive",
+        data={"item_id": po.items[0].id, "delivered_quantity": 6},
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert b"Delivery recorded successfully" in response.data
+    assert b"Partially Received" in response.data
+
+    # Stock increased by 6 (5 + 6 = 11)
+    assert db.session.get(Product, product.id).stock == 11
+    assert db.session.get(PurchaseOrder, po.id).status == "Partially Received"
+
+
+def test_admin_can_record_partial_delivery_via_http(client, logged_in_admin):
+    supplier = Supplier(name="Admin Partial Supplier")
+    product = Product(name="Admin Partial Product", price=Decimal("40.00"), stock=20)
+    db.session.add_all([supplier, product])
+    db.session.commit()
+
+    po = create_purchase_order(
+        supplier_id=supplier.id,
+        items=[{"product_id": product.id, "quantity": 12}],
+    )
+
+    response = client.post(
+        f"/purchase-orders/{po.id}/record-delivery",
+        data={"item_id": po.items[0].id, "delivered_quantity": 5},
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert b"Delivery recorded successfully" in response.data
+    assert db.session.get(Product, product.id).stock == 25
+    assert db.session.get(PurchaseOrder, po.id).status == "Partially Received"
+
+
+def test_partial_delivery_via_json_api(client, logged_in_manager):
+    supplier = Supplier(name="JSON Partial Supplier")
+    product = Product(name="JSON Item", price=Decimal("50.00"), stock=15)
+    db.session.add_all([supplier, product])
+    db.session.commit()
+
+    po = create_purchase_order(
+        supplier_id=supplier.id,
+        items=[{"product_id": product.id, "quantity": 20}],
+    )
+
+    response = client.post(
+        f"/purchase-orders/{po.id}/partial-receive",
+        json={"deliveries": [{"product_id": product.id, "quantity": 7}]},
+    )
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["success"] is True
+    assert data["purchase_order"]["status"] == "Partially Received"
+    assert data["purchase_order"]["total_received_quantity"] == 7
+    assert data["purchase_order"]["total_pending_quantity"] == 13
+    assert db.session.get(Product, product.id).stock == 22
+
+
+def test_partial_delivery_rejects_invalid_inputs_via_http(client, logged_in_manager):
+    supplier = Supplier(name="Invalid Input Supplier")
+    product = Product(name="Invalid Input Item", price=Decimal("15.00"), stock=10)
+    db.session.add_all([supplier, product])
+    db.session.commit()
+
+    po = create_purchase_order(
+        supplier_id=supplier.id,
+        items=[{"product_id": product.id, "quantity": 10}],
+    )
+
+    # Negative quantity
+    res_neg = client.post(
+        f"/purchase-orders/{po.id}/partial-receive",
+        data={"item_id": po.items[0].id, "delivered_quantity": -2},
+        follow_redirects=True,
+    )
+    assert res_neg.status_code == 200
+    assert b"positive whole number" in res_neg.data
+
+    # Over delivery
+    res_over = client.post(
+        f"/purchase-orders/{po.id}/partial-receive",
+        data={"item_id": po.items[0].id, "delivered_quantity": 25},
+        follow_redirects=True,
+    )
+    assert res_over.status_code == 200
+    assert b"exceeds pending quantity" in res_over.data
+
+    # Nonexistent PO -> 404
+    res_404 = client.post(
+        "/purchase-orders/999999/partial-receive",
+        data={"item_id": 1, "delivered_quantity": 5},
+    )
+    assert res_404.status_code == 404
+
+
+def test_purchase_order_view_renders_pending_quantities_and_delivery_form(
+    client, logged_in_manager
+):
+    supplier = Supplier(name="Render Supplier")
+    product = Product(name="Render Item", price=Decimal("12.50"), stock=8)
+    db.session.add_all([supplier, product])
+    db.session.commit()
+
+    po = create_purchase_order(
+        supplier_id=supplier.id,
+        items=[{"product_id": product.id, "quantity": 10}],
+    )
+
+    # Initial view
+    res = client.get(f"/purchase-orders/{po.id}")
+    assert res.status_code == 200
+    assert b"Quantity Pending" in res.data
+    assert b"Record Delivery" in res.data
+
+    # Partial delivery of 4
+    client.post(
+        f"/purchase-orders/{po.id}/partial-receive",
+        data={"item_id": po.items[0].id, "delivered_quantity": 4},
+    )
+
+    res_after = client.get(f"/purchase-orders/{po.id}")
+    assert res_after.status_code == 200
+    assert b"Partially Received" in res_after.data
+    assert b"4" in res_after.data  # Received qty
+    assert b"6" in res_after.data  # Pending qty
