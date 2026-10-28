@@ -1599,7 +1599,10 @@ def test_edit_product_page_shows_alert_when_stock_below_threshold(client):
 
 
 
-def test_stock_edit_creates_audit_entry(client):
+
+def test_stock_edit_creates_audit_entry(client, logged_in_admin):
+    from datetime import datetime
+
     product = Product(name="Audit Mouse", price=Decimal("20.00"), stock=5)
     db.session.add(product)
     db.session.commit()
@@ -1621,6 +1624,45 @@ def test_stock_edit_creates_audit_entry(client):
     ).scalar_one()
 
     assert "5 to 10" in entry.details
+    assert entry.user_id == logged_in_admin.id
+    assert isinstance(entry.created_at, datetime)
+
+
+
+def test_audit_actor_cannot_be_spoofed_by_request_data(client, logged_in_admin):
+    from app.data.models import User
+
+    other_user = User(username="other-audit-user", role="admin")
+    other_user.set_password("OtherPass123")
+    db.session.add(other_user)
+    db.session.commit()
+
+    product = Product(name="Audit Spoof Test", price=Decimal("20.00"), stock=5)
+    db.session.add(product)
+    db.session.commit()
+
+    response = client.post(
+        f"/products/{product.id}/edit",
+        data={
+            "name": product.name,
+            "price": "20.00",
+            "stock": "10",
+            "user_id": str(other_user.id),
+        },
+    )
+
+    assert response.status_code == 302
+
+    entry = db.session.execute(
+        db.select(AuditLog).filter_by(
+            action="stock_edit",
+            entity_type="product",
+            entity_id=product.id,
+        )
+    ).scalar_one()
+
+    assert entry.user_id == logged_in_admin.id
+    assert entry.user_id != other_user.id
 
 
 def test_price_change_creates_audit_entry(client):
@@ -1688,3 +1730,52 @@ def test_product_deletion_creates_audit_entry(client):
 
     assert "Audit Delete" in entry.details
     assert db.session.get(Product, product_id) is None
+
+
+
+def test_audit_entries_preserve_different_users_ids(app):
+    from flask_login import login_user
+    from app.data.models import User
+    from app.business.audit import record_audit
+
+    first_user = User(username="audit-first-user", role="admin")
+    first_user.set_password("FirstPass123")
+    second_user = User(username="audit-second-user", role="admin")
+    second_user.set_password("SecondPass123")
+
+    db.session.add_all([first_user, second_user])
+    db.session.commit()
+
+    first_user_id = first_user.id
+    second_user_id = second_user.id
+
+    with app.test_request_context("/test-audit-first"):
+        login_user(db.session.get(User, first_user_id))
+        first_entry = record_audit(
+            action="test_action",
+            entity_type="test",
+            entity_id=1,
+            details="First user's action",
+        )
+        db.session.commit()
+        first_entry_id = first_entry.id
+
+    with app.test_request_context("/test-audit-second"):
+        login_user(db.session.get(User, second_user_id))
+        second_entry = record_audit(
+            action="test_action",
+            entity_type="test",
+            entity_id=2,
+            details="Second user's action",
+        )
+        db.session.commit()
+        second_entry_id = second_entry.id
+
+    first_entry = db.session.get(AuditLog, first_entry_id)
+    second_entry = db.session.get(AuditLog, second_entry_id)
+
+    assert first_entry.user_id == first_user_id
+    assert second_entry.user_id == second_user_id
+    assert first_entry.user_id != second_entry.user_id
+    assert first_entry.created_at is not None
+    assert second_entry.created_at is not None
