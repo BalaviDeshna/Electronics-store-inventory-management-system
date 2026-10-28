@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
-from decimal import Decimal
 from decimal import Decimal, InvalidOperation
+from app.business.audit import record_audit
 
 from sqlalchemy import and_, func, or_
 from sqlalchemy.exc import IntegrityError
@@ -441,6 +441,8 @@ def edit_product(product_id):
 
             update_supplier = True
 
+        old_price = product.price
+        old_stock = product.stock
         product.name = name
         product.sku = sku
         if hasattr(product, "category"):
@@ -453,6 +455,21 @@ def edit_product(product_id):
             product.supplier_id = supplier_id
 
         try:
+            if old_stock != product.stock:
+                record_audit(
+                    action="stock_edit",
+                    entity_type="product",
+                    entity_id=product.id,
+                    details=f"Stock changed from {old_stock} to {product.stock}",
+                )
+
+            if old_price != product.price:
+                record_audit(
+                    action="price_change",
+                    entity_type="product",
+                    entity_id=product.id,
+                    details=f"Price changed from {old_price} to {product.price}",
+                )
             db.session.commit()
         except IntegrityError:
             db.session.rollback()
@@ -525,6 +542,13 @@ def delete_product(product_id):
         return redirect(url_for("main.home"))
 
     try:
+        record_audit(
+            action="product_delete",
+            entity_type="product",
+            entity_id=product.id,
+            details=f"Deleted product: {product.name}",
+        )
+
         db.session.delete(product)
         db.session.commit()
         flash("Product deleted successfully.", "success")

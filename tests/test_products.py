@@ -1,8 +1,8 @@
 
 from decimal import Decimal
-
 from app.data.extensions import db
 from app.data.models.product import Product
+from app.data.models.audit_log import AuditLog
 
 
 def test_create_product_page_loads(client):
@@ -1596,3 +1596,95 @@ def test_edit_product_page_shows_alert_when_stock_below_threshold(client):
     assert response.status_code == 200
     assert b"Low-Stock Alert" in response.data
     assert b"Restocking is required." in response.data
+
+
+
+def test_stock_edit_creates_audit_entry(client):
+    product = Product(name="Audit Mouse", price=Decimal("20.00"), stock=5)
+    db.session.add(product)
+    db.session.commit()
+    product_id = product.id
+
+    response = client.post(
+        f"/products/{product_id}/edit",
+        data={"name": "Audit Mouse", "price": "20.00", "stock": "10"},
+    )
+
+    assert response.status_code == 302
+
+    entry = db.session.execute(
+        db.select(AuditLog).filter_by(
+            action="stock_edit",
+            entity_type="product",
+            entity_id=product_id,
+        )
+    ).scalar_one()
+
+    assert "5 to 10" in entry.details
+
+
+def test_price_change_creates_audit_entry(client):
+    product = Product(name="Audit Keyboard", price=Decimal("50.00"), stock=5)
+    db.session.add(product)
+    db.session.commit()
+    product_id = product.id
+
+    response = client.post(
+        f"/products/{product_id}/edit",
+        data={"name": "Audit Keyboard", "price": "60.00", "stock": "5"},
+    )
+
+    assert response.status_code == 302
+
+    entry = db.session.execute(
+        db.select(AuditLog).filter_by(
+            action="price_change",
+            entity_type="product",
+            entity_id=product_id,
+        )
+    ).scalar_one()
+
+    assert "50.00" in entry.details
+    assert "60.00" in entry.details
+
+
+def test_invalid_product_edit_does_not_create_audit_entry(client):
+    product = Product(name="Audit Headphones", price=Decimal("30.00"), stock=4)
+    db.session.add(product)
+    db.session.commit()
+    product_id = product.id
+
+    response = client.post(
+        f"/products/{product_id}/edit",
+        data={"name": "Audit Headphones", "price": "-1", "stock": "10"},
+    )
+
+    assert response.status_code == 200
+
+    entries = db.session.execute(
+        db.select(AuditLog).filter_by(entity_id=product_id)
+    ).scalars().all()
+
+    assert entries == []
+
+
+def test_product_deletion_creates_audit_entry(client):
+    product = Product(name="Audit Delete", price=Decimal("15.00"), stock=3)
+    db.session.add(product)
+    db.session.commit()
+    product_id = product.id
+
+    response = client.post(f"/products/{product_id}/delete")
+
+    assert response.status_code == 302
+
+    entry = db.session.execute(
+        db.select(AuditLog).filter_by(
+            action="product_delete",
+            entity_type="product",
+            entity_id=product_id,
+        )
+    ).scalar_one()
+
+    assert "Audit Delete" in entry.details
+    assert db.session.get(Product, product_id) is None
