@@ -605,6 +605,98 @@ def process_return_route():
     return redirect(url_for("main.home"))
 
 
+
+
+@main_bp.route("/reports/revenue", methods=["GET"])
+@manager_required
+def revenue_report():
+    raw_start = request.args.get("start_date", "").strip()
+    raw_end = request.args.get("end_date", "").strip()
+
+    sales = []
+    daily_totals = []
+    total_revenue = Decimal("0.00")
+    error = None
+    report_generated = False
+
+    if raw_start or raw_end:
+        if not raw_start or not raw_end:
+            error = "Select both a start date and an end date."
+        else:
+            try:
+                start = datetime.strptime(
+                    raw_start, "%Y-%m-%d"
+                ).date()
+                end = datetime.strptime(
+                    raw_end, "%Y-%m-%d"
+                ).date()
+
+                if (
+                    start.isoformat() != raw_start
+                    or end.isoformat() != raw_end
+                ):
+                    raise ValueError
+
+                if start > end:
+                    error = (
+                        "The start date cannot be after the end date."
+                    )
+            except ValueError:
+                error = (
+                    "Enter valid dates and ensure the start date "
+                    "is not after the end date."
+                )
+
+            if error is None:
+                start_dt = datetime.combine(
+                    start, datetime.min.time()
+                )
+                end_exclusive = datetime.combine(
+                    end + timedelta(days=1),
+                    datetime.min.time(),
+                )
+
+                sales = (
+                    Sale.query
+                    .filter(
+                        Sale.created_at >= start_dt,
+                        Sale.created_at < end_exclusive,
+                    )
+                    .order_by(Sale.created_at.asc(), Sale.id.asc())
+                    .all()
+                )
+
+                for sale in sales:
+                    amount = sale.total_amount or Decimal("0.00")
+                    total_revenue += amount
+
+                    sale_day = sale.created_at.date()
+                    if (
+                        not daily_totals
+                        or daily_totals[-1]["date"] != sale_day
+                    ):
+                        daily_totals.append({
+                            "date": sale_day,
+                            "revenue": Decimal("0.00"),
+                            "transactions": 0,
+                        })
+
+                    daily_totals[-1]["revenue"] += amount
+                    daily_totals[-1]["transactions"] += 1
+
+                report_generated = True
+
+    return render_template(
+        "revenue_report.html",
+        start_date=raw_start,
+        end_date=raw_end,
+        sales=sales,
+        daily_totals=daily_totals,
+        total_revenue=total_revenue,
+        transaction_count=len(sales),
+        error=error,
+        report_generated=report_generated,
+    )
 @main_bp.route("/reports/sales", methods=["GET"])
 @manager_required
 def sales_report():
