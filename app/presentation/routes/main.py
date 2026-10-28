@@ -605,7 +605,68 @@ def process_return_route():
     return redirect(url_for("main.home"))
 
 
+@main_bp.route("/reports/sales", methods=["GET"])
+@manager_required
+def sales_report():
+    raw_start = request.args.get("start_date", "").strip()
+    raw_end = request.args.get("end_date", "").strip()
 
+    sales = []
+    error = None
+
+    if raw_start or raw_end:
+        if not raw_start or not raw_end:
+            error = "Select both a start date and an end date."
+        else:
+            try:
+                start = datetime.strptime(raw_start, "%Y-%m-%d").date()
+                end = datetime.strptime(raw_end, "%Y-%m-%d").date()
+
+                if (
+                    start.isoformat() != raw_start
+                    or end.isoformat() != raw_end
+                ):
+                    raise ValueError
+
+                if start > end:
+                    error = "The start date cannot be after the end date."
+
+            except ValueError:
+                error = (
+                    "Enter valid dates and ensure the start date "
+                    "is not after the end date."
+                )
+
+            if error is None:
+                start_dt = datetime.combine(
+                    start,
+                    datetime.min.time(),
+                )
+                end_exclusive = datetime.combine(
+                    end + timedelta(days=1),
+                    datetime.min.time(),
+                )
+
+                sales = (
+                    Sale.query
+                    .filter(
+                        Sale.created_at >= start_dt,
+                        Sale.created_at < end_exclusive,
+                    )
+                    .order_by(
+                        Sale.created_at.desc(),
+                        Sale.id.desc(),
+                    )
+                    .all()
+                )
+
+    return render_template(
+        "sales_report.html",
+        start_date=raw_start,
+        end_date=raw_end,
+        sales=sales,
+        error=error,
+    )
 @main_bp.route("/reports/stock", methods=["GET"])
 @manager_required
 def stock_report():
