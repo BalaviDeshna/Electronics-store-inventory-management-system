@@ -37,6 +37,21 @@
 </form>
 
 {% if report_rows %}
+
+{% if start_date and end_date and not error %}
+    <div class="d-flex gap-2 mb-3">
+        <a class="btn btn-outline-success"
+           href="{{ url_for('main.export_stock_report', export_format='csv', start_date=start_date, end_date=end_date) }}">
+            Export CSV
+        </a>
+        <a class="btn btn-outline-danger"
+           href="{{ url_for('main.export_stock_report', export_format='pdf', start_date=start_date, end_date=end_date) }}">
+            Export PDF
+        </a>
+    </div>
+{% endif %}
+
+
     <table>
         <thead>
             <tr>

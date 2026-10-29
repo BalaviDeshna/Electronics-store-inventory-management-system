@@ -39,6 +39,12 @@ from app.data.models import (
     SaleItem,
     Supplier,
 )
+
+from app.business.report_exports import (
+    build_csv_response,
+    build_pdf_response,
+)
+
 from app.presentation.authz import manager_required
 
 
@@ -866,4 +872,224 @@ def stock_report():
         end_date=raw_end,
         report_rows=report_rows,
         error=error,
+    )
+
+
+
+def _export_date_range():
+    """Validate dates shared by report exports."""
+    raw_start = request.args.get("start_date", "").strip()
+    raw_end = request.args.get("end_date", "").strip()
+
+    if not raw_start or not raw_end:
+        abort(400, description="Select both a start date and an end date.")
+
+    try:
+        start = datetime.strptime(raw_start, "%Y-%m-%d").date()
+        end = datetime.strptime(raw_end, "%Y-%m-%d").date()
+        if start.isoformat() != raw_start or end.isoformat() != raw_end:
+            raise ValueError
+    except ValueError:
+        abort(400, description="Enter valid dates.")
+
+    if start > end:
+        abort(400, description="The start date cannot be after the end date.")
+
+    start_dt = datetime.combine(start, datetime.min.time())
+    end_exclusive = datetime.combine(
+        end + timedelta(days=1), datetime.min.time()
+    )
+    return raw_start, raw_end, start_dt, end_exclusive
+
+
+def _send_report_export(
+    title, columns, rows, report_name, export_format, start, end, totals=None
+):
+    """Return a CSV or PDF download."""
+    if export_format not in {"csv", "pdf"}:
+        abort(404)
+
+    filename = f"{report_name}_{start}_to_{end}.{export_format}"
+    builder = build_csv_response if export_format == "csv" else build_pdf_response
+
+    return builder(
+        title,
+        columns,
+        rows,
+        filename,
+        date_range=f"{start} to {end}",
+        totals=totals,
+    )
+
+
+@main_bp.route("/reports/sales/export/<export_format>")
+@manager_required
+def export_sales_report(export_format):
+    start, end, start_dt, end_exclusive = _export_date_range()
+
+    sales = (
+        Sale.query.filter(
+            Sale.created_at >= start_dt,
+            Sale.created_at < end_exclusive,
+        )
+        .order_by(Sale.created_at.desc(), Sale.id.desc())
+        .all()
+    )
+
+    rows = []
+    total = Decimal("0.00")
+
+    for sale in sales:
+        items = "; ".join(
+            f"{item.product_name} x {item.quantity} - {item.line_total}"
+            for item in sale.items
+        )
+        amount = sale.total_amount or Decimal("0.00")
+        total += amount
+        rows.append([
+            sale.id,
+            sale.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+            items,
+            f"{amount:.2f}",
+        ])
+
+    return _send_report_export(
+        "Sales Report",
+        ["Sale ID", "Date and Time", "Items", "Total Amount"],
+        rows,
+        "sales_report",
+        export_format,
+        start,
+        end,
+        totals=["", "", f"{total:.2f}"],
+    )
+
+
+@main_bp.route("/reports/revenue/export/<export_format>")
+@manager_required
+def export_revenue_report(export_format):
+    start, end, start_dt, end_exclusive = _export_date_range()
+
+    sales = (
+        Sale.query.filter(
+            Sale.created_at >= start_dt,
+            Sale.created_at < end_exclusive,
+        )
+        .order_by(Sale.created_at.asc(), Sale.id.asc())
+        .all()
+    )
+
+    total_revenue = sum(
+        (sale.total_amount or Decimal("0.00") for sale in sales),
+        Decimal("0.00"),
+    )
+    daily = {}
+
+    for sale in sales:
+        day = sale.created_at.date().isoformat()
+        if day not in daily:
+            daily[day] = {"revenue": Decimal("0.00"), "transactions": 0}
+        daily[day]["revenue"] += sale.total_amount or Decimal("0.00")
+        daily[day]["transactions"] += 1
+
+    rows = []
+    for day, values in sorted(daily.items()):
+        rows.append([
+            "Daily Revenue",
+            day,
+            values["transactions"],
+            f"{values['revenue']:.2f}",
+        ])
+
+    for sale in sales:
+        items = "; ".join(
+            f"{item.product_name} x {item.quantity} - {item.line_total}"
+            for item in sale.items
+        )
+        rows.append([
+            "Sale",
+            sale.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+            sale.id,
+            f"{sale.total_amount or Decimal('0.00'):.2f} — {items}",
+        ])
+
+    return _send_report_export(
+        "Revenue Report",
+        ["Section", "Date / Time", "Transactions / Sale ID", "Revenue / Sale Details"],
+        rows,
+        "revenue_report",
+        export_format,
+        start,
+        end,
+        totals=["Transactions", len(sales), f"{total_revenue:.2f}"],
+    )
+
+
+@main_bp.route("/reports/stock/export/<export_format>")
+@manager_required
+def export_stock_report(export_format):
+    start, end, start_dt, end_exclusive = _export_date_range()
+
+    def totals_by_product(query):
+        return {
+            product_id: int(quantity or 0)
+            for product_id, quantity in query.all()
+        }
+
+    sold = totals_by_product(
+        db.session.query(SaleItem.product_id, func.sum(SaleItem.quantity))
+        .join(Sale, Sale.id == SaleItem.sale_id)
+        .filter(
+            Sale.created_at >= start_dt,
+            Sale.created_at < end_exclusive,
+        )
+        .group_by(SaleItem.product_id)
+    )
+    restocked = totals_by_product(
+        db.session.query(
+            ProductRestock.product_id, func.sum(ProductRestock.quantity)
+        )
+        .filter(
+            ProductRestock.created_at >= start_dt,
+            ProductRestock.created_at < end_exclusive,
+        )
+        .group_by(ProductRestock.product_id)
+    )
+    returned = totals_by_product(
+        db.session.query(
+            ProductReturn.product_id, func.sum(ProductReturn.quantity)
+        )
+        .filter(
+            ProductReturn.created_at >= start_dt,
+            ProductReturn.created_at < end_exclusive,
+        )
+        .group_by(ProductReturn.product_id)
+    )
+
+    rows = []
+    for product in Product.query.order_by(Product.name).all():
+        sold_qty = sold.get(product.id, 0)
+        restock_qty = restocked.get(product.id, 0)
+        return_qty = returned.get(product.id, 0)
+        rows.append([
+            product.name,
+            product.sku or "",
+            sold_qty,
+            restock_qty,
+            return_qty,
+            restock_qty + return_qty - sold_qty,
+            product.stock,
+        ])
+
+    return _send_report_export(
+        "Stock Report",
+        [
+            "Product", "SKU", "Units Sold", "Units Restocked",
+            "Units Returned", "Net Movement", "Current Stock",
+        ],
+        rows,
+        "stock_report",
+        export_format,
+        start,
+        end,
     )

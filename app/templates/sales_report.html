@@ -54,6 +54,21 @@
             Report period: {{ start_date }} to {{ end_date }}
         </h5>
 
+
+
+<div class="d-flex gap-2 mb-3">
+    <a class="btn btn-outline-success"
+       href="{{ url_for('main.export_sales_report', export_format='csv', start_date=start_date, end_date=end_date) }}">
+        Export CSV
+    </a>
+    <a class="btn btn-outline-danger"
+       href="{{ url_for('main.export_sales_report', export_format='pdf', start_date=start_date, end_date=end_date) }}">
+        Export PDF
+    </a>
+</div>
+
+
+
         {% if sales %}
             <div class="table-responsive">
                 <table class="table table-striped table-bordered">
