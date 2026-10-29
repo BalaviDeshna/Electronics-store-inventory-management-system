@@ -759,3 +759,89 @@ def test_return_route_updates_stock_and_blocks_duplicate(app, client):
 
     with app.app_context():
         assert db.session.get(Product, product_id).stock == 5
+
+def test_return_records_refund_from_original_sale_price(app):
+    with app.app_context():
+        product = add_product("Mechanical Keyboard", "80.00", 10)
+        sale = create_sale(
+            [{"product_id": product.id, "quantity": 3}],
+            Product,
+        )
+        sale_item = sale.items[0]
+
+        # Change the current product price after the sale.
+        product.price = Decimal("100.00")
+        db.session.commit()
+
+        process_return(
+            sale_item_id=sale_item.id,
+            quantity=2,
+            return_id="RET-REFUND-001",
+            product_model=Product,
+        )
+
+        record = ProductReturn.query.filter_by(
+            return_id="RET-REFUND-001"
+        ).one()
+
+        assert record.refund_amount == Decimal("160.00")
+        assert record.quantity == 2
+
+
+def test_partial_returns_record_individual_refund_amounts(app):
+    with app.app_context():
+        product = add_product("USB-C Hub", "25.00", 10)
+        sale = create_sale(
+            [{"product_id": product.id, "quantity": 3}],
+            Product,
+        )
+        sale_item = sale.items[0]
+
+        process_return(
+            sale_item_id=sale_item.id,
+            quantity=1,
+            return_id="RET-REFUND-PART-1",
+            product_model=Product,
+        )
+        process_return(
+            sale_item_id=sale_item.id,
+            quantity=2,
+            return_id="RET-REFUND-PART-2",
+            product_model=Product,
+        )
+
+        first = ProductReturn.query.filter_by(
+            return_id="RET-REFUND-PART-1"
+        ).one()
+        second = ProductReturn.query.filter_by(
+            return_id="RET-REFUND-PART-2"
+        ).one()
+
+        assert first.refund_amount == Decimal("25.00")
+        assert second.refund_amount == Decimal("50.00")
+        assert first.refund_amount + second.refund_amount == Decimal("75.00")
+
+
+def test_return_rejects_mismatched_sale_id(app):
+    with app.app_context():
+        product = add_product("Wireless Mouse", "30.00", 10)
+        sale = create_sale(
+            [{"product_id": product.id, "quantity": 2}],
+            Product,
+        )
+        sale_item = sale.items[0]
+
+        with pytest.raises(StockUpdateError, match="does not match"):
+            process_return(
+                sale_item_id=sale_item.id,
+                sale_id=sale.id + 999,
+                quantity=1,
+                return_id="RET-MISMATCH-001",
+                product_model=Product,
+            )
+
+        db.session.expire_all()
+        assert db.session.get(Product, product.id).stock == 8
+        assert ProductReturn.query.filter_by(
+            return_id="RET-MISMATCH-001"
+        ).count() == 0

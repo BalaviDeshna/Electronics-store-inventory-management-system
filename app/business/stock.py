@@ -1,3 +1,4 @@
+from decimal import Decimal, ROUND_HALF_UP
 from sqlalchemy import func
 
 from app.data.extensions import db
@@ -104,6 +105,9 @@ def restock_inventory(items, product_model=None):
         raise
 
 
+
+
+
 def process_return(
     product_id=None,
     quantity=None,
@@ -112,82 +116,118 @@ def process_return(
     return_id=None,
     product_model=None,
 ):
-    """
-    Process a customer return and increase stock accordingly.
-    Prevents duplicate processing and invalid quantities.
-    """
+    """Process a return atomically, recording its calculated refund."""
     if product_model is None:
         product_model = Product
 
-    clean_return_id = None
-    if return_id is not None:
-        clean_return_id = str(return_id).strip()
-        if not clean_return_id:
-            raise StockUpdateError("Return ID cannot be empty.")
-        existing = db.session.execute(
-            db.select(ProductReturn).filter_by(return_id=clean_return_id)
-        ).scalar_one_or_none()
-        if existing is not None:
-            raise StockUpdateError(
-                f"Return '{clean_return_id}' has already been processed."
-            )
-
-    sale_item = None
-    if sale_item_id is not None:
-        valid_sale_item_id = _validate_positive_int(
-            sale_item_id, name="Sale item ID"
-        )
-        sale_item = db.session.get(SaleItem, valid_sale_item_id)
-        if sale_item is None:
-            raise StockUpdateError(
-                f"Sale item {valid_sale_item_id} does not exist."
-            )
-
-        target_product_id = sale_item.product_id
-        effective_sale_id = sale_id or sale_item.sale_id
-
-        already_returned = (
-            db.session.query(
-                func.coalesce(func.sum(ProductReturn.quantity), 0)
-            )
-            .filter(ProductReturn.sale_item_id == valid_sale_item_id)
-            .scalar()
-        )
-
-        if quantity is None:
-            valid_qty = sale_item.quantity - already_returned
-            if valid_qty <= 0:
-                raise StockUpdateError(
-                    f"Sale item {valid_sale_item_id} has already been completely returned."
-                )
-        else:
-            valid_qty = _validate_positive_int(quantity, name="Return quantity")
-            if already_returned + valid_qty > sale_item.quantity:
-                raise StockUpdateError(
-                    f"Cannot return {valid_qty} units. Already returned: {already_returned}, purchased: {sale_item.quantity}."
-                )
-    elif product_id is not None:
-        target_product_id = _validate_positive_int(product_id, name="Product ID")
-        if quantity is None:
-            raise StockUpdateError("Return quantity must be provided.")
-        valid_qty = _validate_positive_int(quantity, name="Return quantity")
-        effective_sale_id = (
-            _validate_positive_int(sale_id, name="Sale ID") if sale_id else None
-        )
-        valid_sale_item_id = None
-    else:
-        raise StockUpdateError(
-            "Either product_id or sale_item_id must be provided for a return."
-        )
-
     try:
-        query = db.session.query(product_model).filter_by(id=target_product_id)
+        clean_return_id = None
+        if return_id is not None:
+            clean_return_id = str(return_id).strip()
+            if not clean_return_id:
+                raise StockUpdateError("Return ID cannot be empty.")
+
+            existing = db.session.execute(
+                db.select(ProductReturn).filter_by(return_id=clean_return_id)
+            ).scalar_one_or_none()
+            if existing is not None:
+                raise StockUpdateError(
+                    f"Return '{clean_return_id}' has already been processed."
+                )
+
+        valid_sale_item_id = None
+        effective_sale_id = None
+        refund_amount = Decimal("0.00")
+
+        if sale_item_id is not None:
+            valid_sale_item_id = _validate_positive_int(
+                sale_item_id, name="Sale item ID"
+            )
+            sale_item = db.session.get(SaleItem, valid_sale_item_id)
+
+            if sale_item is None:
+                raise StockUpdateError(
+                    f"Sale item {valid_sale_item_id} does not exist."
+                )
+
+            effective_sale_id = sale_item.sale_id
+
+            if sale_id is not None:
+                supplied_sale_id = _validate_positive_int(
+                    sale_id, name="Sale ID"
+                )
+                if supplied_sale_id != effective_sale_id:
+                    raise StockUpdateError(
+                        "The sale ID does not match the selected sale item."
+                    )
+
+            already_returned = (
+                db.session.query(
+                    func.coalesce(func.sum(ProductReturn.quantity), 0)
+                )
+                .filter(
+                    ProductReturn.sale_item_id == valid_sale_item_id
+                )
+                .scalar()
+            )
+
+            if quantity is None:
+                valid_qty = int(sale_item.quantity) - int(already_returned)
+                if valid_qty <= 0:
+                    raise StockUpdateError(
+                        f"Sale item {valid_sale_item_id} has already "
+                        "been completely returned."
+                    )
+            else:
+                valid_qty = _validate_positive_int(
+                    quantity, name="Return quantity"
+                )
+                if int(already_returned) + valid_qty > int(sale_item.quantity):
+                    raise StockUpdateError(
+                        f"Cannot return {valid_qty} units. "
+                        f"Already returned: {already_returned}, "
+                        f"purchased: {sale_item.quantity}."
+                    )
+
+            # Use the original transaction price, never the current product price.
+            refund_amount = (
+                Decimal(str(sale_item.unit_price)) * valid_qty
+            ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+            target_product_id = int(sale_item.product_id)
+
+        elif product_id is not None:
+            target_product_id = _validate_positive_int(
+                product_id, name="Product ID"
+            )
+            if quantity is None:
+                raise StockUpdateError("Return quantity must be provided.")
+
+            valid_qty = _validate_positive_int(
+                quantity, name="Return quantity"
+            )
+
+            if sale_id is not None:
+                raise StockUpdateError(
+                    "A sale item ID is required for a sale-linked return."
+                )
+
+        else:
+            raise StockUpdateError(
+                "Either product_id or sale_item_id must be provided for a return."
+            )
+
+        query = db.session.query(product_model).filter_by(
+            id=target_product_id
+        )
         if db.engine.dialect.name != "sqlite":
             query = query.with_for_update()
 
         product = query.one_or_none()
         if product is None:
-            raise StockUpdateError(f"Product {target_product_id} does not exist.")
+            raise StockUpdateError(
+                f"Product {target_product_id} does not exist."
+            )
 
         product.stock = int(product.stock) + valid_qty
 
@@ -197,10 +237,12 @@ def process_return(
             sale_item_id=valid_sale_item_id,
             product_id=target_product_id,
             quantity=valid_qty,
+            refund_amount=refund_amount,
         )
         db.session.add(return_record)
         db.session.commit()
         return product
+
     except Exception:
         db.session.rollback()
         raise

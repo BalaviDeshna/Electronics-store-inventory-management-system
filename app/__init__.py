@@ -1,4 +1,8 @@
+
 from flask import Flask
+
+from sqlalchemy import inspect, text
+
 from app.config import Config
 from app.data.extensions import db, login_manager
 from app.data.models import (
@@ -34,6 +38,7 @@ def create_app(test_config=None):
     db.init_app(app)
     login_manager.init_app(app)
     login_manager.login_view = "auth.login"
+
     app.register_blueprint(auth_bp)
     app.register_blueprint(main_bp)
     app.register_blueprint(supplier_bp)
@@ -41,35 +46,77 @@ def create_app(test_config=None):
     app.register_blueprint(purchase_order_bp)
 
     with app.app_context():
+        # Ensure supporting tables exist.
         try:
             Supplier.__table__.create(db.engine, checkfirst=True)
             PurchaseOrder.__table__.create(db.engine, checkfirst=True)
             PurchaseOrderItem.__table__.create(db.engine, checkfirst=True)
         except Exception:
-            pass
+            app.logger.exception(
+                "Unable to ensure supporting tables exist"
+            )
 
+        # Add columns introduced by previous schema updates.
         try:
-            from sqlalchemy import inspect, text
             inspector = inspect(db.engine)
-            if "products" in inspector.get_table_names():
-                cols = [c["name"] for c in inspector.get_columns("products")]
-                if "reorder_threshold" not in cols:
-                    with db.engine.connect() as conn:
+            table_names = inspector.get_table_names()
+
+            if "products" in table_names:
+                columns = {
+                    column["name"]
+                    for column in inspector.get_columns("products")
+                }
+
+                if "reorder_threshold" not in columns:
+                    with db.engine.begin() as conn:
                         conn.execute(
                             text(
-                                "ALTER TABLE products ADD COLUMN reorder_threshold INTEGER NOT NULL DEFAULT 0"
+                                "ALTER TABLE products "
+                                "ADD COLUMN reorder_threshold "
+                                "INTEGER NOT NULL DEFAULT 0"
                             )
                         )
-                        conn.commit()
-                if "supplier_id" not in cols:
-                    with db.engine.connect() as conn:
+
+                if "supplier_id" not in columns:
+                    with db.engine.begin() as conn:
                         conn.execute(
                             text(
-                                "ALTER TABLE products ADD COLUMN supplier_id INTEGER REFERENCES suppliers(id)"
+                                "ALTER TABLE products "
+                                "ADD COLUMN supplier_id INTEGER "
+                                "REFERENCES suppliers(id)"
                             )
                         )
-                        conn.commit()
         except Exception:
-            pass
+            app.logger.exception(
+                "Unable to update products schema"
+            )
+
+        # Add the refund amount column to existing return tables.
+        try:
+            inspector = inspect(db.engine)
+            table_names = inspector.get_table_names()
+
+            if "product_returns" in table_names:
+                columns = {
+                    column["name"]
+                    for column in inspector.get_columns(
+                        "product_returns"
+                    )
+                }
+
+                if "refund_amount" not in columns:
+                    with db.engine.begin() as conn:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE product_returns "
+                                "ADD COLUMN refund_amount "
+                                "NUMERIC(12, 2) "
+                                "NOT NULL DEFAULT 0.00"
+                            )
+                        )
+        except Exception:
+            app.logger.exception(
+                "Unable to update product_returns schema"
+            )
 
     return app
