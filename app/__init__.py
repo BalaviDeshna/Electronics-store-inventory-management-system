@@ -55,6 +55,7 @@ def create_app(test_config=None):
             app.logger.exception(
                 "Unable to ensure supporting tables exist"
             )
+            raise
 
         # Add columns introduced by previous schema updates.
         try:
@@ -90,6 +91,7 @@ def create_app(test_config=None):
             app.logger.exception(
                 "Unable to update products schema"
             )
+            raise
 
         # Add the refund amount column to existing return tables.
         try:
@@ -118,5 +120,6 @@ def create_app(test_config=None):
             app.logger.exception(
                 "Unable to update product_returns schema"
             )
+            raise
 
     return app
