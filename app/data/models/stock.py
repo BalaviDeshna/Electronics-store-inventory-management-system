@@ -1,3 +1,4 @@
+from decimal import Decimal
 from datetime import datetime, timezone
 
 from app.data.extensions import db
@@ -14,6 +15,12 @@ class ProductReturn(db.Model):
     sale_item_id = db.Column(db.Integer, db.ForeignKey("sale_items.id"), nullable=True)
     product_id = db.Column(db.Integer, nullable=False, index=True)
     quantity = db.Column(db.Integer, nullable=False)
+
+    refund_amount = db.Column(
+    db.Numeric(12, 2),
+    nullable=False,
+    default=Decimal("0.00"),
+    )
     created_at = db.Column(
         db.DateTime,
         nullable=False,
