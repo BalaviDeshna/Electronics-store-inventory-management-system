@@ -1732,7 +1732,6 @@ def test_product_deletion_creates_audit_entry(client):
     assert db.session.get(Product, product_id) is None
 
 
-
 def test_audit_entries_preserve_different_users_ids(app):
     from flask_login import login_user
     from app.data.models import User
@@ -1779,3 +1778,27 @@ def test_audit_entries_preserve_different_users_ids(app):
     assert first_entry.user_id != second_entry.user_id
     assert first_entry.created_at is not None
     assert second_entry.created_at is not None
+
+
+def test_audit_log_older_than_six_months_remains_available(app):
+    from datetime import datetime, timedelta, timezone
+
+    old_timestamp = datetime.now(timezone.utc) - timedelta(days=190)
+    entry = AuditLog(
+        action="retention_test",
+        entity_type="test",
+        entity_id=999,
+        details="Record must remain available",
+        created_at=old_timestamp,
+    )
+    db.session.add(entry)
+    db.session.commit()
+    entry_id = entry.id
+
+    db.session.expire_all()
+    retained_entry = db.session.get(AuditLog, entry_id)
+
+    assert retained_entry is not None
+    assert retained_entry.action == "retention_test"
+    assert retained_entry.details == "Record must remain available"
+    assert retained_entry.created_at.replace(tzinfo=timezone.utc) == old_timestamp
