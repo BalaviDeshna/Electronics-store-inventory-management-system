@@ -331,6 +331,7 @@ def test_create_sale_route_blocks_overselling_shows_clear_error_and_preserves_st
     assert b"Smartwatch" in response.data
     assert b"Available: 3" in response.data
     assert b"requested: 4" in response.data
+    assert b"Reduce the quantity or restock the product." in response.data
 
     with app.app_context():
         assert db.session.get(Product, product_id).stock == 3
