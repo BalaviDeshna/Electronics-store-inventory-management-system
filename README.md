@@ -33,3 +33,14 @@ Open http://127.0.0.1:5000/ in a browser.
 Tests use temporary SQLite. Set `DATABASE_URL` to the agreed
 MySQL connection string when the MySQL environment is ready.
 Never commit secrets.
+
+## Daily Database Backups
+
+The application supports automated daily backups of its SQLite database.
+
+### Manual Backup
+
+Run the following command from the project root:
+
+```bash
+python scripts/backup_database.py
