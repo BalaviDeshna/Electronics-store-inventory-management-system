@@ -45,6 +45,7 @@ def test_wrong_password_is_rejected(client, app):
         follow_redirects=True,
     )
     assert b"Invalid username or password, or account deactivated." in response.data
+    assert b'<p class="error" role="alert">' in response.data
 
 
 def test_unknown_username_is_rejected(client):

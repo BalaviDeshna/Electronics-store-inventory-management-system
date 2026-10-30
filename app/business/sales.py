@@ -113,7 +113,9 @@ def create_sale(items, product_model):
             if stock < quantity:
                 product_name = getattr(product, "name", str(product_id))
                 raise SaleValidationError(
-                    f"Insufficient stock for product {product_id} ({product_name}). Available: {stock}, requested: {quantity}."
+                    f"Insufficient stock for {product_name}. "
+                    f"Available: {stock}, requested: {quantity}. "
+                    "Reduce the quantity or restock the product."
                 )
 
             unit_price = money(product.price)
