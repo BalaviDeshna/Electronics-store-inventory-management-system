@@ -86,13 +86,21 @@ def create_sale(items, product_model):
 
     try:
         validated_items = []
+
+        query = db.session.query(product_model).filter(
+            product_model.id.in_(quantities.keys())
+        )
+
+        if db.engine.dialect.name != "sqlite":
+            query = query.with_for_update()
+
+        products_by_id = {
+            product.id: product
+            for product in query.all()
+        }
+
         for product_id in sorted(quantities):
-            query = db.session.query(product_model).filter_by(id=product_id)
-
-            if db.engine.dialect.name != "sqlite":
-                query = query.with_for_update()
-
-            product = query.one_or_none()
+            product = products_by_id.get(product_id)
 
             if product is None:
                 raise SaleValidationError(
